@@ -1,82 +1,67 @@
-# Nasdeck Agent
+# Nasdeck Agent 🕵️‍♂️
 
-A tiny always-on service that runs **on the NAS** and executes `docker compose`
-on behalf of the Nasdeck iOS app. The app never holds the DSM admin password for
-deploys — it sends signed commands over a pinned-TLS channel, and the agent runs
-compose locally.
+**Nasdeck Agent** là một ứng dụng siêu nhẹ (Microservice) được viết bằng Golang, đóng vai trò như một "Điệp viên ngầm" được cài đặt trực tiếp trên hệ điều hành của NAS (Network Attached Storage), đặc biệt tối ưu cho Synology DSM.
 
-- **Language:** Go (static binary, multi-arch `linux/arm64,amd64`).
-- **Auth:** Ed25519 signed requests (`X-Nasdeck-*` headers) + replay protection.
-- **Transport:** HTTPS with a self-signed cert the app **pins by SHA-256 fingerprint**.
+Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hóa từ ứng dụng di động **Nasdeck iOS App** và thực thi chúng ở cấp độ hệ thống, giúp bạn quản lý NAS mà không cần phải mở giao diện web DSM rườm rà.
 
-## Build & run
+---
+
+## 🛠 Nguyên lý Hoạt động
+
+Khác với các hệ thống quản lý NAS truyền thống, Nasdeck Agent được thiết kế với tư duy "Cloud-Native" và "Zero-Trust":
+
+### 1. Thao tác hệ thống qua Docker Socket
+Agent không chạy các lệnh shell nguy hiểm. Thay vào đó, nó giao tiếp trực tiếp với **Docker Daemon** thông qua file socket nội bộ (`/var/run/docker.sock`).
+- Khi bạn bấm "Cài đặt Immich" trên App iOS, Agent sẽ nhận payload JSON, tự động dịch nó thành lệnh `docker-compose up -d`.
+- Nó có thể đọc log theo thời gian thực (Server-Sent Events) và trả thẳng về màn hình iPhone của bạn.
+
+### 2. Tự động hóa Mạng (Tailscale & Cloudflare)
+Agent tích hợp sẵn logic để điều khiển các đường hầm VPN thế hệ mới:
+- **Cloudflare Zero Trust:** Nó có khả năng "luồn" vào container Cloudflared, đọc cấu hình xác thực, và tự động gọi API `route dns` để gán tên miền phụ (VD: `immich.domain.com`) trỏ thẳng về NAS của bạn.
+- **Reverse Proxy nội bộ:** Tích hợp Nginx để tự động phân luồng giao thông (Subpath routing), cho phép gom nhiều ứng dụng vào chung một tên miền (VD: `nas.domain.com/apps/hello-world`).
+
+### 3. Giao tiếp siêu bảo mật (TOFU & HMAC)
+Mọi kết nối từ App iOS đến Agent đều không dùng mật khẩu.
+- **TOFU (Trust On First Use):** Khi kết nối lần đầu, Agent cấp một chứng chỉ tự ký (Self-signed Certificate). App iOS sẽ ghim (Pin) dấu vân tay của chứng chỉ này lại. Nếu ai đó cố gắng thực hiện Man-In-The-Middle attack, App sẽ chặn đứng ngay lập tức!
+- **Chữ ký Request (HMAC Signature):** Mọi request gửi đi đều kèm theo Timestamp, Nonce, và được ký bằng khóa ECDSA Private Key ẩn sâu trong phần cứng mã hóa (Secure Enclave) của iPhone. Agent giữ Public Key và sẽ từ chối mọi truy cập giả mạo.
+
+---
+
+## 🚀 Hướng dẫn Biên dịch (Build)
+
+Agent được thiết kế để chạy trên mọi kiến trúc CPU, nhưng phổ biến nhất là `linux/amd64` (Synology NAS).
+
+### 1. Biên dịch chéo (Cross-Compile) trên macOS / Windows
+Chỉ cần bạn đã cài đặt Go (phiên bản 1.21 trở lên):
 
 ```bash
-make build            # native binary → ./bin/nasdeck-agent
-make docker           # host-arch image
-make multiarch        # linux/arm64,linux/amd64 → push to $IMAGE
-make test             # unit + signature interop + integration tests
+# Clone repository
+git clone https://github.com/nasdeck/agent.git
+cd agent
+
+# Biên dịch cho Linux AMD64
+GOOS=linux GOARCH=amd64 go build -o nasdeck-agent-linux main.go
+
+# (Tuỳ chọn) Build cho ARM64 (Raspberry Pi)
+GOOS=linux GOARCH=arm64 go build -o nasdeck-agent-arm64 main.go
 ```
 
-### Run on the NAS (what the iOS bootstrap automates)
+### 2. Triển khai (Deploy)
+Agent thường được đóng gói thành một Docker Image siêu nhỏ gọn (`ghcr.io/nasdeck/agent`). File `Dockerfile` đã được tối ưu hóa theo mô hình Multi-stage build.
 
 ```bash
-docker run -d --name nasdeck-agent --restart unless-stopped \
-  -p 8443:8443 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /volume1/docker:/data \
-  -e NASDECK_TRUSTED_PUBKEY=<base64 app pubkey> \
-  -e NASDECK_PAIRING_SECRET=<one-time secret> \
-  ghcr.io/phuctu1901/nasdeck-agent:latest
+docker build -t ghcr.io/nasdeck/agent:latest .
 ```
 
-> The `docker compose` CLI parses the compose file in its own process, so the
-> `-f` path must be the path the CLI sees — which is `NASDECK_DATA_DIR` (`/data`,
-> the mount above). `NASDECK_HOST_DATA_DIR` defaults to `NASDECK_DATA_DIR`, so you
-> don't set it for the normal container case. Override only if the agent writes
-> files and the compose CLI see different mount namespaces.
+---
 
-On boot the agent prints `NASDECK_CERT_FINGERPRINT=<base64 sha256(der)>`, which the
-app reads from the Task Scheduler output and pins for TLS.
+## 📂 Cấu trúc Mã nguồn
 
-## Environment
+- `server.go`: Nơi định nghĩa các API Endpoints (như `/deploy`, `/logs`, `/remove`).
+- `deploy.go`: Logic cốt lõi phân tích file Docker-Compose và gọi lệnh thực thi.
+- `cloudflare.go`: Module chuyên biệt xử lý cấp phát chứng chỉ và định tuyến Ingress cho Cloudflare Tunnel.
+- `auth.go`: Kiểm tra chữ ký bảo mật từ Header của HTTP Requests.
+- `proxy.go`: Tương tác với Nginx để nạp cấu hình Reverse Proxy động.
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `NASDECK_PORT` | `8443` | listen port |
-| `NASDECK_DATA_DIR` | `/data` | container path where compose artifacts are written (mount the NAS docker share here) |
-| `NASDECK_HOST_DATA_DIR` | `= NASDECK_DATA_DIR` | path the compose CLI sees for `-f` (defaults to DATA_DIR; override only for split mounts) |
-| `NASDECK_TRUSTED_PUBKEY` | — | comma-separated base64 Ed25519 public keys allowed to command the agent |
-| `NASDECK_PAIRING_SECRET` | — | one-time secret confirmed via `POST /pair` |
-| `NASDECK_VERSION` | `0.1.0` | reported version |
-
-## HTTP API
-
-All routes except `/ping` require a valid Ed25519 signature (see scheme below).
-
-| Method | Path | Body | Returns |
-|--------|------|------|---------|
-| GET  | `/ping` | — | `{ok, version}` (unsigned liveness) |
-| POST | `/pair` | `{pairingSecret, label?}` | `{ok, certFingerprint, version, keyId}` |
-| POST | `/deploy` | `{id, compose, version?}` | `{ok, version, hostPath, output}` |
-| GET  | `/logs/{id}?follow=1` | — | SSE stream `data: <line>` |
-| GET  | `/health/{id}` | — | `{id, state, detail, path}` |
-| POST | `/rollback/{id}` | — | `{ok, version, previous, output}` |
-
-`id` must match `^[A-Za-z0-9_-]+$`. Each deploy is an immutable artifact at
-`<data>/<id>/v<sha256[:6]>/docker-compose.yml`; rollback repoints `current`.
-
-## Signature scheme (must match iOS `AgentTransport`)
-
-```
-X-Nasdeck-Keyid: base64( 32-byte Ed25519 public key )
-X-Nasdeck-Ts:    decimal unix seconds          (±60s window)
-X-Nasdeck-Nonce: base64( 16 random bytes )     (replay-protected 120s)
-X-Nasdeck-Sig:   base64( 64-byte signature )
-
-sigBase = METHOD + "\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + hex(sha256(body))
-```
-
-Ed25519 keys are raw 32-byte; iOS CryptoKit `Curve25519.Signing` and Go
-`crypto/ed25519` are interoperable (deterministic, RFC 8032). See
-`interop_test.go` for the canonical vectors the iOS test reproduces.
+---
+*Thuộc Hệ sinh thái Nasdeck. Cảm ơn bạn đã quan tâm đóng góp!*

@@ -71,6 +71,11 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// exist". Pre-create them (agent runs as root; harmless if already present).
 	ensureBindMountDirs([]byte(req.Compose))
 
+	// Forcefully remove any existing container with the exact target name.
+	// This prevents "Conflict" errors when migrating from the old agent (which
+	// used random project names) to the new agent (which uses explicit `-p req.ID`).
+	_ = exec.Command("docker", "rm", "-f", "nasdeck-"+req.ID).Run()
+
 	out, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
 
 	// Record current version so /logs /health /rollback can resolve it.

@@ -8,10 +8,10 @@ Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hó
 
 ## 🛠 Nguyên lý Hoạt động
 
-👉 **[Đọc tài liệu phân tích chuyên sâu tại sao Nasdeck KHÔNG dùng SSH tại đây (Cơ chế Hoạt động).](AGENT_MECHANISM.md)**
-👉 **[Đọc tài liệu Giải phẫu Cấu trúc Mã nguồn (Modules) tại đây.](MODULES.md)**
-👉 **[Đọc bài học thực tiễn: Khắc phục lỗi Mạng Tailscale bằng Docker.](TAILSCALE_DEPLOYMENT.md)**
-👉 **[Đọc bài học thực tiễn: Gỡ lỗi "Thành công ảo" của Cloudflare Tunnel.](CLOUDFLARED_DEPLOYMENT.md)**
+- 👉 **[Đọc tài liệu phân tích chuyên sâu tại sao Nasdeck KHÔNG dùng SSH tại đây (Cơ chế Hoạt động).](AGENT_MECHANISM.md)**
+- 👉 **[Đọc tài liệu Giải phẫu Cấu trúc Mã nguồn (Modules) tại đây.](MODULES.md)**
+- 👉 **[Đọc bài học thực tiễn: Khắc phục lỗi Mạng Tailscale bằng Docker.](TAILSCALE_DEPLOYMENT.md)**
+- 👉 **[Đọc bài học thực tiễn: Gỡ lỗi "Thành công ảo" của Cloudflare Tunnel.](CLOUDFLARED_DEPLOYMENT.md)**
 
 Khác với các hệ thống quản lý NAS truyền thống, Nasdeck Agent được thiết kế với tư duy "Cloud-Native" và "Zero-Trust":
 

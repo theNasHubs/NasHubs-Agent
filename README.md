@@ -8,6 +8,8 @@ Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hó
 
 ## 🛠 Nguyên lý Hoạt động
 
+👉 **[Đọc tài liệu phân tích chuyên sâu tại sao Nasdeck KHÔNG dùng SSH tại đây (Cơ chế Hoạt động).](AGENT_MECHANISM.md)**
+
 Khác với các hệ thống quản lý NAS truyền thống, Nasdeck Agent được thiết kế với tư duy "Cloud-Native" và "Zero-Trust":
 
 ### 1. Thao tác hệ thống qua Docker Socket

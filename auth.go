@@ -1,0 +1,123 @@
+package main
+
+import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// HTTP Signature scheme (must match iOS AgentTransport exactly):
+//
+//	X-Nasdeck-Keyid: base64( 32-byte Ed25519 public key )
+//	X-Nasdeck-Ts:    decimal unix seconds
+//	X-Nasdeck-Nonce: base64( 16 random bytes )
+//	X-Nasdeck-Sig:   base64( 64-byte Ed25519 signature )
+//
+//	sigBase = METHOD + "\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + hex(sha256(body))
+//	(PATH = URL path only, no query string; GET/empty body hashes to sha256("").
+const (
+	hdrKeyID = "X-Nasdeck-Keyid"
+	hdrTs    = "X-Nasdeck-Ts"
+	hdrNonce = "X-Nasdeck-Nonce"
+	hdrSig   = "X-Nasdeck-Sig"
+
+	maxSkew   = 60 * time.Second
+	nonceTTL  = 2 * time.Minute
+	maxNonces = 50_000 // hard cap to prevent unbounded memory growth under burst
+)
+
+// nonceCache prevents replay of previously seen (ts,nonce) pairs.
+type nonceCache struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func newNonceCache() *nonceCache {
+	return &nonceCache{seen: map[string]time.Time{}}
+}
+
+// checkAndAdd returns false if the nonce was already seen (replay). Prunes expired.
+func (n *nonceCache) checkAndAdd(key string, now time.Time) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	// prune expired entries
+	for k, t := range n.seen {
+		if now.Sub(t) > nonceTTL {
+			delete(n.seen, k)
+		}
+	}
+	// hard cap: if still too large after pruning, clear the whole cache.
+	// This sacrifices replay protection for the brief window but prevents OOM.
+	if len(n.seen) >= maxNonces {
+		n.seen = map[string]time.Time{}
+	}
+	if _, ok := n.seen[key]; ok {
+		return false
+	}
+	n.seen[key] = now
+	return true
+}
+
+type authResult struct {
+	keyID string
+}
+
+// verifyRequest validates the HTTP signature. Returns the trusted keyId on success.
+func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error) {
+	keyID := r.Header.Get(hdrKeyID)
+	tsStr := r.Header.Get(hdrTs)
+	nonce := r.Header.Get(hdrNonce)
+	sigB64 := r.Header.Get(hdrSig)
+	if keyID == "" || tsStr == "" || nonce == "" || sigB64 == "" {
+		return authResult{}, fmt.Errorf("missing signature headers")
+	}
+
+	// 1) timestamp freshness
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		return authResult{}, fmt.Errorf("bad timestamp")
+	}
+	now := time.Now()
+	if diff := now.Sub(time.Unix(ts, 0)); diff > maxSkew || diff < -maxSkew {
+		return authResult{}, fmt.Errorf("timestamp out of range")
+	}
+
+	// 2) replay protection (scoped to nonce within the skew window)
+	replayKey := tsStr + ":" + nonce
+	if !s.nonces.checkAndAdd(replayKey, now) {
+		return authResult{}, fmt.Errorf("replay detected")
+	}
+
+	// 3) key must be in the configured trust set
+	if !s.cfg.TrustedPublicKeys[keyID] {
+		return authResult{}, fmt.Errorf("untrusted key")
+	}
+	pub, err := base64.StdEncoding.DecodeString(keyID)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return authResult{}, fmt.Errorf("bad key id")
+	}
+
+	// 4) signature must verify over the canonical base
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		return authResult{}, fmt.Errorf("bad signature encoding")
+	}
+	base := signatureBase(r.Method, r.URL.Path, tsStr, nonce, body)
+	if !ed25519.Verify(ed25519.PublicKey(pub), base, sig) {
+		return authResult{}, fmt.Errorf("invalid signature")
+	}
+	return authResult{keyID: keyID}, nil
+}
+
+// signatureBase builds the canonical message that is signed/verified.
+func signatureBase(method, path, ts, nonce string, body []byte) []byte {
+	sum := sha256.Sum256(body)
+	// method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + hex(sha256(body))
+	return []byte(method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + hex.EncodeToString(sum[:]))
+}

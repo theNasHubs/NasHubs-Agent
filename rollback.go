@@ -59,7 +59,7 @@ func (s *server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hostCompose := filepath.Join(s.cfg.HostDataDir, id, target, "docker-compose.yml")
-	out, runErr := s.runCompose(hostCompose, "up", "-d")
+	out, runErr := s.runCompose(hostCompose, id, "up", "-d")
 	_ = saveState(s.cfg.DataDir, id, deployState{
 		Current:   target,
 		HostPath:  hostCompose,

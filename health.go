@@ -24,8 +24,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// "stopped" from "deleted" via the shared classifier in state.go. The old
 	// "non-empty ⇒ up" check was also wrong on docker-compose v1, which prints a
 	// header row even for an empty project.
-	runningOut, _ := s.runCompose(st.HostPath, "ps")
-	allOut, _ := s.runCompose(st.HostPath, "ps", "-a")
+	runningOut, _ := s.runCompose(st.HostPath, id, "ps")
+	allOut, _ := s.runCompose(st.HostPath, id, "ps", "-a")
 	state := classifyState(runningOut, allOut)
 	trimmed := strings.TrimSpace(runningOut)
 	writeJSON(w, http.StatusOK, map[string]any{

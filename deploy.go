@@ -71,7 +71,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// exist". Pre-create them (agent runs as root; harmless if already present).
 	ensureBindMountDirs([]byte(req.Compose))
 
-	out, runErr := s.runCompose(hostCompose, "up", "-d")
+	out, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
 
 	// Record current version so /logs /health /rollback can resolve it.
 	st := deployState{
@@ -128,8 +128,9 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 // runCompose invokes the compose CLI (v2 plugin or v1 binary) with a compose
 // file resolved on the HOST filesystem.
-func (s *server) runCompose(hostCompose string, args ...string) (string, error) {
+func (s *server) runCompose(hostCompose string, projectName string, args ...string) (string, error) {
 	argv := append([]string{}, s.composeArgs...)
+	argv = append(argv, "-p", "nasdeck-"+projectName)
 	argv = append(argv, "-f", hostCompose, "--project-directory", filepath.Dir(hostCompose))
 	argv = append(argv, args...)
 	cmd := exec.Command(argv[0], argv[1:]...)

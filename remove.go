@@ -29,7 +29,7 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 
 	// Tear down the current deployment if compose file exists
 	if st.HostPath != "" {
-		_, _ = s.runCompose(st.HostPath, "down")
+		_, _ = s.runCompose(st.HostPath, id, "down")
 	}
 
 	// Fallback: forcefully remove any container named nasdeck-{id}

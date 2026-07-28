@@ -125,11 +125,11 @@ func isSeparatorLine(line string) bool {
 // on any compose error (file missing, daemon down) it returns "unknown" rather
 // than guessing. runCompose prepends `-f <hostCompose> --project-directory <dir>`.
 func (s *server) probeState(id, hostCompose string) string {
-	runningOut, runErr := s.runCompose(hostCompose, "ps")
+	runningOut, runErr := s.runCompose(hostCompose, id, "ps")
 	if runErr != nil {
 		return stUnknown
 	}
-	allOut, _ := s.runCompose(hostCompose, "ps", "-a")
+	allOut, _ := s.runCompose(hostCompose, id, "ps", "-a")
 	state := classifyState(runningOut, allOut)
 	
 	// Fallback for manually deployed or non-compose containers

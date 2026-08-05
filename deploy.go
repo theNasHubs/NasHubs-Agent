@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -138,7 +139,11 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	argv = append(argv, "-p", "nashubs-"+projectName)
 	argv = append(argv, "-f", hostCompose, "--project-directory", filepath.Dir(hostCompose))
 	argv = append(argv, args...)
-	cmd := exec.Command(argv[0], argv[1:]...)
+	// Bound every compose invocation so a hung daemon / stuck pull can't leave an
+	// orphaned process forever. Generous enough for image pulls on slow links.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(),
 		"COMPOSE_COMPATIBILITY=true",
 		// Synology keeps docker/compose under these paths; harmless elsewhere.

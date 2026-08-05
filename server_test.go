@@ -37,7 +37,14 @@ func newTestServer(t *testing.T) (*httptest.Server, ed25519.PrivateKey, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &server{cfg: cfg, nonces: newNonceCache(), certFingerprint: fp}
+	s := &server{
+		cfg:             cfg,
+		nonces:          newNonceCache(),
+		certFingerprint: fp,
+		devices:         newDeviceStore(cfg.DataDir),
+		startedAt:       time.Now(),
+		pairLimiter:     newRateLimiter(100, time.Minute), // high cap so tests aren't throttled
+	}
 	ts := httptest.NewUnstartedServer(s.routes())
 	ts.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	ts.StartTLS()

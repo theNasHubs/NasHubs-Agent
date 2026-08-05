@@ -26,6 +26,7 @@ type Config struct {
 	TrustedPublicKeys map[string]bool
 	PairingSecret     string
 	Version           string
+	AgentImage        string // image pulled by the typed self-update endpoint
 }
 
 func loadConfig() Config {
@@ -35,6 +36,7 @@ func loadConfig() Config {
 		NginxConfDir:  envOr("NASHUBS_NGINX_CONF_DIR", "/etc/nginx/conf.d"),
 		PairingSecret: os.Getenv("NASHUBS_PAIRING_SECRET"),
 		Version:       envOr("NASHUBS_VERSION", version),
+		AgentImage:    envOr("NASHUBS_AGENT_IMAGE", "ghcr.io/thenashubs/nashubs-agent:latest"),
 	}
 	// The `docker compose` CLI reads the compose file from ITS OWN filesystem
 	// (the CLI parses the YAML client-side), so the "-f" path must be the path

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 type server struct {
@@ -16,6 +18,13 @@ type server struct {
 	nonces          *nonceCache
 	certFingerprint string
 	composeArgs     []string // ["docker","compose"] (v2) or ["docker-compose"] (v1, DSM 7.0 "Docker" pkg)
+
+	devices     *deviceStore
+	startedAt   time.Time    // for the pairing TTL window
+	pairLimiter *rateLimiter // throttles /pair attempts per client IP
+
+	pairMu          sync.Mutex // guards pairingConsumed + the enroll decision
+	pairingConsumed bool       // one-time pairing secret already used
 }
 
 // detectCompose picks the compose invocation available on the host. DSM 7.0's
@@ -39,22 +48,54 @@ func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ping", s.handlePing)
 
-	// Signature-authenticated routes.
+	// Pairing: authenticated, but role is resolved inside the handler (a not-yet
+	// enrolled but env-trusted key must be able to enroll itself).
 	mux.HandleFunc("POST /pair", s.requireAuth(s.handlePair))
-	mux.HandleFunc("POST /deploy", s.requireAuth(s.handleDeploy))
-	mux.HandleFunc("GET /logs/", s.requireAuth(s.handleLogs))
-	mux.HandleFunc("GET /health/", s.requireAuth(s.handleHealth))
-	mux.HandleFunc("POST /rollback/", s.requireAuth(s.handleRollback))
-	mux.HandleFunc("POST /remove/", s.requireAuth(s.handleRemove))
-	mux.HandleFunc("POST /exec/", s.requireAuth(s.handleExec))
-	mux.HandleFunc("POST /proxy", s.requireAuth(s.handleProxy))
-	mux.HandleFunc("GET /proxies", s.requireAuth(s.handleListProxies))
-	mux.HandleFunc("GET /state", s.requireAuth(s.handleState))
-	mux.HandleFunc("GET /remote-status", s.requireAuth(s.handleRemoteStatus))
-	mux.HandleFunc("POST /configure-proxy", s.requireAuth(s.handleConfigureAllProxies))
-	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.handleGetCloudflare))
-	mux.HandleFunc("POST /configure-cloudflare", s.requireAuth(s.handleConfigureCloudflare))
+
+	// Read-only routes (viewer and above).
+	mux.HandleFunc("GET /logs/", s.requireAuth(s.requireRole(RoleViewer, s.handleLogs)))
+	mux.HandleFunc("GET /health/", s.requireAuth(s.requireRole(RoleViewer, s.handleHealth)))
+	mux.HandleFunc("GET /proxies", s.requireAuth(s.requireRole(RoleViewer, s.handleListProxies)))
+	mux.HandleFunc("GET /state", s.requireAuth(s.requireRole(RoleViewer, s.handleState)))
+	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleViewer, s.handleRemoteStatus)))
+	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleViewer, s.handleGetCloudflare)))
+	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
+
+	// Mutating routes (admin and above).
+	mux.HandleFunc("POST /deploy", s.requireAuth(s.requireRole(RoleAdmin, s.handleDeploy)))
+	mux.HandleFunc("POST /rollback/", s.requireAuth(s.requireRole(RoleAdmin, s.handleRollback)))
+	mux.HandleFunc("POST /remove/", s.requireAuth(s.requireRole(RoleAdmin, s.handleRemove)))
+	mux.HandleFunc("POST /proxy", s.requireAuth(s.requireRole(RoleAdmin, s.handleProxy)))
+	mux.HandleFunc("POST /configure-proxy", s.requireAuth(s.requireRole(RoleAdmin, s.handleConfigureAllProxies)))
+	mux.HandleFunc("POST /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleConfigureCloudflare)))
+	// Typed self-update replaces the removed generic /exec.
+	mux.HandleFunc("POST /agent/update", s.requireAuth(s.requireRole(RoleAdmin, s.handleAgentUpdate)))
+
+	// Owner-only device management.
+	mux.HandleFunc("POST /devices/revoke", s.requireAuth(s.requireRole(RoleOwner, s.handleRevokeDevice)))
 	return s.recoverer(mux)
+}
+
+// requireRole gates a handler behind a minimum role. Must be wrapped by
+// requireAuth (which puts the resolved authResult in the request context).
+func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		role := authFrom(r).role
+		ok := false
+		switch min {
+		case RoleViewer:
+			ok = role == RoleViewer || role == RoleAdmin || role == RoleOwner
+		case RoleAdmin:
+			ok = role == RoleAdmin || role == RoleOwner
+		case RoleOwner:
+			ok = role == RoleOwner
+		}
+		if !ok {
+			writeJSON(w, http.StatusForbidden, errMap("insufficient role", nil))
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {

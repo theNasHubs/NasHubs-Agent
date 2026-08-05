@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // ensureDockerOnPATH appends the locations Synology keeps docker/compose under,
@@ -48,6 +49,11 @@ func main() {
 		nonces:          newNonceCache(),
 		certFingerprint: fp,
 		composeArgs:     detectCompose(),
+		devices:         newDeviceStore(cfg.DataDir),
+		startedAt:       time.Now(),
+		// Allow a handful of pairing attempts per client IP within the window
+		// (the app retries while the container boots).
+		pairLimiter: newRateLimiter(10, 5*time.Minute),
 	}
 	log.Printf("using compose: %v", s.composeArgs)
 

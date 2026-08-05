@@ -66,6 +66,7 @@ func (n *nonceCache) checkAndAdd(key string, now time.Time) bool {
 
 type authResult struct {
 	keyID string
+	role  Role
 }
 
 // verifyRequest validates the HTTP signature. Returns the trusted keyId on success.
@@ -88,8 +89,13 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 		return authResult{}, fmt.Errorf("timestamp out of range")
 	}
 
-	// 2) key must be in the configured trust set
-	if !s.cfg.TrustedPublicKeys[keyID] {
+	// 2) key must be trusted: either injected at bootstrap (env) or enrolled as
+	// a device. A revoked device is rejected even if its key is still in env.
+	dev := s.devices.lookup(keyID)
+	if dev != nil && dev.revoked() {
+		return authResult{}, fmt.Errorf("device revoked")
+	}
+	if dev == nil && !s.cfg.TrustedPublicKeys[keyID] {
 		return authResult{}, fmt.Errorf("untrusted key")
 	}
 	pub, err := base64.StdEncoding.DecodeString(keyID)
@@ -118,7 +124,14 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 		return authResult{}, fmt.Errorf("replay detected")
 	}
 
-	return authResult{keyID: keyID}, nil
+	// 5) resolve role. An enrolled device uses its stored role; an env-trusted
+	// key that has not enrolled yet is treated as owner (the bootstrap device).
+	role := RoleOwner
+	if dev != nil {
+		role = dev.Role
+	}
+	s.devices.touch(keyID)
+	return authResult{keyID: keyID, role: role}, nil
 }
 
 // signatureBase builds the canonical message that is signed/verified.

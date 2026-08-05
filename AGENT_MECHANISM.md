@@ -1,14 +1,14 @@
-# Cơ chế Hoạt động của Nasdeck Agent 🧠
+# Cơ chế Hoạt động của NasHubs Agent 🧠
 
-Nasdeck Agent là một chương trình siêu nhỏ gọn (Microservice) được viết bằng ngôn ngữ Golang. Nó đóng vai trò như một "bộ não trung gian" hay "quản gia" nằm vùng sâu bên trong hệ điều hành NAS của bạn (đặc biệt tối ưu cho Synology DSM).
+NasHubs Agent là một chương trình siêu nhỏ gọn (Microservice) được viết bằng ngôn ngữ Golang. Nó đóng vai trò như một "bộ não trung gian" hay "quản gia" nằm vùng sâu bên trong hệ điều hành NAS của bạn (đặc biệt tối ưu cho Synology DSM).
 
 Tài liệu này giải phẫu chi tiết cơ chế hoạt động của Agent và giải thích lý do tại sao kiến trúc này lại vượt trội so với các phương pháp quản lý NAS truyền thống.
 
 ---
 
-## 1. Tại sao Nasdeck KHÔNG dùng SSH để điều khiển?
+## 1. Tại sao NasHubs KHÔNG dùng SSH để điều khiển?
 
-Hầu hết các ứng dụng quản lý máy chủ hiện nay trên thị trường (như Termius, ServerAuditor, hay các app NAS 서드파티) đều yêu cầu bạn cung cấp tài khoản root/admin và kết nối liên tục thông qua SSH để gửi lệnh. Nasdeck **kiên quyết nói KHÔNG** với cách tiếp cận này, bởi vì:
+Hầu hết các ứng dụng quản lý máy chủ hiện nay trên thị trường (như Termius, ServerAuditor, hay các app NAS 서드파티) đều yêu cầu bạn cung cấp tài khoản root/admin và kết nối liên tục thông qua SSH để gửi lệnh. NasHubs **kiên quyết nói KHÔNG** với cách tiếp cận này, bởi vì:
 
 ### ❌ Rủi ro Bảo mật (Command Injection)
 Khi một ứng dụng gửi lệnh Shell (VD: `docker run ...`) qua SSH, một sai sót nhỏ trong việc lọc chuỗi (escaping) cũng có thể dẫn đến việc hacker tiêm mã độc (Command Injection) và xóa toàn bộ dữ liệu trên NAS của bạn.
@@ -17,7 +17,7 @@ Việc khởi tạo một phiên SSH (SSH Handshake) tốn rất nhiều thời 
 ### ❌ Trải nghiệm Lỗi (Error Handling) tệ hại
 Lệnh Shell trả về dữ liệu dưới dạng chuỗi văn bản (Plain text). Việc dùng Regex để bóc tách thông tin từ các chuỗi này cực kỳ dễ hỏng (Fragile) nếu HĐH NAS thay đổi phiên bản.
 
-**👉 Giải pháp của Nasdeck:** Agent chỉ dùng SSH **đúng 1 lần duy nhất** trong đời để tự động cài đặt chính nó vào NAS. Sau đó, nó đóng vĩnh viễn cửa SSH đối với Ứng dụng iOS và chuyển sang giao tiếp thông qua API HTTP(s) nội bộ tốc độ cao với định dạng dữ liệu JSON có cấu trúc chặt chẽ.
+**👉 Giải pháp của NasHubs:** Agent chỉ dùng SSH **đúng 1 lần duy nhất** trong đời để tự động cài đặt chính nó vào NAS. Sau đó, nó đóng vĩnh viễn cửa SSH đối với Ứng dụng iOS và chuyển sang giao tiếp thông qua API HTTP(s) nội bộ tốc độ cao với định dạng dữ liệu JSON có cấu trúc chặt chẽ.
 
 ---
 
@@ -25,7 +25,7 @@ Lệnh Shell trả về dữ liệu dưới dạng chuỗi văn bản (Plain tex
 
 Đã không dùng lệnh Shell, vậy làm sao Agent điều khiển được Docker?
 
-Thay vì "gõ lệnh", Nasdeck Agent giao tiếp trực tiếp với "Trái tim" của Docker thông qua file socket nội bộ: **`/var/run/docker.sock`**.
+Thay vì "gõ lệnh", NasHubs Agent giao tiếp trực tiếp với "Trái tim" của Docker thông qua file socket nội bộ: **`/var/run/docker.sock`**.
 - Khi bạn bấm "Cài đặt ứng dụng" trên iOS, App gửi một file cấu hình JSON cho Agent.
 - Agent phân tích file này và gọi thẳng **Docker Engine API** qua giao thức HTTP-over-Unix-Socket để yêu cầu tải Image, tạo Container, gắn Volume (ổ cứng) và mở Port. 
 - Nó tương đương với việc Agent tự mình "viết code" trực tiếp vào bộ nhớ của hệ thống Docker. Điều này loại bỏ hoàn toàn khả năng bị Command Injection và tăng tốc độ xử lý lên hàng chục lần.
@@ -50,5 +50,5 @@ Agent tuyệt đối không lưu trữ, không hỏi, và không biết mật kh
 4. Agent nhận lệnh -> Dùng Khóa Công Khai để kiểm tra chữ ký -> Kẻ gian dù có ăn cắp được gói tin hay mò được IP của NAS cũng không thể ra lệnh cho Agent vì họ không có Khóa Bí Mật trên điện thoại của bạn.
 
 ### Tóm lại
-**Nasdeck Agent = Trình quản lý Docker API + Máy chủ Xác thực Mật mã + Kỹ sư Mạng tự động.** 
+**NasHubs Agent = Trình quản lý Docker API + Máy chủ Xác thực Mật mã + Kỹ sư Mạng tự động.** 
 Nhờ sự xuất hiện của Agent, việc quản lý NAS trở nên mượt mà, siêu tốc và an toàn tuyệt đối ngay từ thiết kế (Secure by Design)!

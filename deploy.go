@@ -74,7 +74,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// Forcefully remove any existing container with the exact target name.
 	// This prevents "Conflict" errors when migrating from the old agent (which
 	// used random project names) to the new agent (which uses explicit `-p req.ID`).
-	_ = exec.Command("docker", "rm", "-f", "nasdeck-"+req.ID).Run()
+	_ = exec.Command("docker", "rm", "-f", "nashubs-"+req.ID).Run()
 
 	out, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
 
@@ -108,7 +108,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if prefix == "" {
 			prefix = "/" + req.ID
 		}
-		confFile := filepath.Join(s.cfg.NginxConfDir, fmt.Sprintf("dsm.nasdeck-%s.conf", req.ID))
+		confFile := filepath.Join(s.cfg.NginxConfDir, fmt.Sprintf("dsm.nashubs-%s.conf", req.ID))
 		conf := generateNginxConf(prefix, req.InternalPort)
 		if err := os.WriteFile(confFile, []byte(conf), 0o644); err == nil {
 			if err := s.testNginx(); err != nil {
@@ -135,7 +135,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 // file resolved on the HOST filesystem.
 func (s *server) runCompose(hostCompose string, projectName string, args ...string) (string, error) {
 	argv := append([]string{}, s.composeArgs...)
-	argv = append(argv, "-p", "nasdeck-"+projectName)
+	argv = append(argv, "-p", "nashubs-"+projectName)
 	argv = append(argv, "-f", hostCompose, "--project-directory", filepath.Dir(hostCompose))
 	argv = append(argv, args...)
 	cmd := exec.Command(argv[0], argv[1:]...)

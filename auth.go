@@ -14,18 +14,18 @@ import (
 
 // HTTP Signature scheme (must match iOS AgentTransport exactly):
 //
-//	X-Nasdeck-Keyid: base64( 32-byte Ed25519 public key )
-//	X-Nasdeck-Ts:    decimal unix seconds
-//	X-Nasdeck-Nonce: base64( 16 random bytes )
-//	X-Nasdeck-Sig:   base64( 64-byte Ed25519 signature )
+//	X-NasHubs-Keyid: base64( 32-byte Ed25519 public key )
+//	X-NasHubs-Ts:    decimal unix seconds
+//	X-NasHubs-Nonce: base64( 16 random bytes )
+//	X-NasHubs-Sig:   base64( 64-byte Ed25519 signature )
 //
 //	sigBase = METHOD + "\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + hex(sha256(body))
 //	(PATH = URL path only, no query string; GET/empty body hashes to sha256("").
 const (
-	hdrKeyID = "X-Nasdeck-Keyid"
-	hdrTs    = "X-Nasdeck-Ts"
-	hdrNonce = "X-Nasdeck-Nonce"
-	hdrSig   = "X-Nasdeck-Sig"
+	hdrKeyID = "X-NasHubs-Keyid"
+	hdrTs    = "X-NasHubs-Ts"
+	hdrNonce = "X-NasHubs-Nonce"
+	hdrSig   = "X-NasHubs-Sig"
 
 	maxSkew   = 60 * time.Second
 	nonceTTL  = 2 * time.Minute
@@ -88,13 +88,7 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 		return authResult{}, fmt.Errorf("timestamp out of range")
 	}
 
-	// 2) replay protection (scoped to nonce within the skew window)
-	replayKey := tsStr + ":" + nonce
-	if !s.nonces.checkAndAdd(replayKey, now) {
-		return authResult{}, fmt.Errorf("replay detected")
-	}
-
-	// 3) key must be in the configured trust set
+	// 2) key must be in the configured trust set
 	if !s.cfg.TrustedPublicKeys[keyID] {
 		return authResult{}, fmt.Errorf("untrusted key")
 	}
@@ -103,7 +97,7 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 		return authResult{}, fmt.Errorf("bad key id")
 	}
 
-	// 4) signature must verify over the canonical base
+	// 3) signature must verify over the canonical base
 	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil {
 		return authResult{}, fmt.Errorf("bad signature encoding")
@@ -112,6 +106,18 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	if !ed25519.Verify(ed25519.PublicKey(pub), base, sig) {
 		return authResult{}, fmt.Errorf("invalid signature")
 	}
+
+	// 4) replay protection — recorded ONLY after the key is trusted and the
+	// signature is valid. Doing this last prevents an unauthenticated attacker
+	// from "burning" a (ts,nonce) pair with a forged request and thereby
+	// blocking the legitimate signed request that reuses it within the window.
+	// A genuine replay still fails here: the captured request has a valid
+	// signature, reaches this point, and checkAndAdd returns false.
+	replayKey := tsStr + ":" + nonce
+	if !s.nonces.checkAndAdd(replayKey, now) {
+		return authResult{}, fmt.Errorf("replay detected")
+	}
+
 	return authResult{keyID: keyID}, nil
 }
 

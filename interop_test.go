@@ -38,7 +38,7 @@ func TestSignatureBaseFormat(t *testing.T) {
 func TestEd25519DeterministicVector(t *testing.T) {
 	priv := ed25519.NewKeyFromSeed(fixedSeed)
 	pub := priv.Public().(ed25519.PublicKey)
-	msg := []byte("nasdeck interop test\n")
+	msg := []byte("nashubs interop test\n")
 	sig := ed25519.Sign(priv, msg)
 
 	if !ed25519.Verify(pub, msg, sig) {

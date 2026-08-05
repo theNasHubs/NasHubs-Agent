@@ -12,11 +12,11 @@ var version = "dev"
 // Config holds all runtime configuration sourced from environment variables.
 //
 // Bootstrap (app → SYNO.Core.TaskScheduler) runs the agent container with:
-//   NASDECK_TRUSTED_PUBKEY  = base64 Ed25519 public key of the pairing iPhone
-//   NASDECK_PAIRING_SECRET  = one-time secret confirmed via POST /pair
-//   NASDECK_DATA_DIR        = path inside this container where compose files are written
+//   NASHUBS_TRUSTED_PUBKEY  = base64 Ed25519 public key of the pairing iPhone
+//   NASHUBS_PAIRING_SECRET  = one-time secret confirmed via POST /pair
+//   NASHUBS_DATA_DIR        = path inside this container where compose files are written
 //                             (mounted from the NAS host share)
-//   NASDECK_HOST_DATA_DIR   = the SAME directory as seen by the host Docker daemon,
+//   NASHUBS_HOST_DATA_DIR   = the SAME directory as seen by the host Docker daemon,
 //                             needed because `docker compose -f <path>` is resolved on the host.
 type Config struct {
 	Port              string
@@ -30,19 +30,19 @@ type Config struct {
 
 func loadConfig() Config {
 	c := Config{
-		Port:          envOr("NASDECK_PORT", "8443"),
-		DataDir:       envOr("NASDECK_DATA_DIR", "/data"),
-		NginxConfDir:  envOr("NASDECK_NGINX_CONF_DIR", "/etc/nginx/conf.d"),
-		PairingSecret: os.Getenv("NASDECK_PAIRING_SECRET"),
-		Version:       envOr("NASDECK_VERSION", version),
+		Port:          envOr("NASHUBS_PORT", "8443"),
+		DataDir:       envOr("NASHUBS_DATA_DIR", "/data"),
+		NginxConfDir:  envOr("NASHUBS_NGINX_CONF_DIR", "/etc/nginx/conf.d"),
+		PairingSecret: os.Getenv("NASHUBS_PAIRING_SECRET"),
+		Version:       envOr("NASHUBS_VERSION", version),
 	}
 	// The `docker compose` CLI reads the compose file from ITS OWN filesystem
 	// (the CLI parses the YAML client-side), so the "-f" path must be the path
 	// the CLI process sees — which is the same mount the agent wrote to. Default
 	// HOST_DATA_DIR to DATA_DIR (override only for unusual split-mount setups).
-	c.HostDataDir = envOr("NASDECK_HOST_DATA_DIR", c.DataDir)
+	c.HostDataDir = envOr("NASHUBS_HOST_DATA_DIR", c.DataDir)
 	c.TrustedPublicKeys = map[string]bool{}
-	for _, k := range strings.Split(os.Getenv("NASDECK_TRUSTED_PUBKEY"), ",") {
+	for _, k := range strings.Split(os.Getenv("NASHUBS_TRUSTED_PUBKEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
 			c.TrustedPublicKeys[k] = true
 		}

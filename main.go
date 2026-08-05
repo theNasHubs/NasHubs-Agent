@@ -32,10 +32,10 @@ func main() {
 	cfg := loadConfig()
 
 	if len(cfg.TrustedPublicKeys) == 0 {
-		log.Println("[warn] NASDECK_TRUSTED_PUBKEY not set — no client can authenticate")
+		log.Println("[warn] NASHUBS_TRUSTED_PUBKEY not set — no client can authenticate")
 	}
 	if cfg.PairingSecret == "" {
-		log.Println("[warn] NASDECK_PAIRING_SECRET not set — /pair will be rejected")
+		log.Println("[warn] NASHUBS_PAIRING_SECRET not set — /pair will be rejected")
 	}
 
 	cert, fp, err := ensureCert(cfg.DataDir)
@@ -52,8 +52,8 @@ func main() {
 	log.Printf("using compose: %v", s.composeArgs)
 
 	// Parsed by the app from the Task Scheduler output after bootstrap.
-	fmt.Printf("NASDECK_CERT_FINGERPRINT=%s\n", fp)
-	fmt.Printf("NASDECK_VERSION=%s\n", cfg.Version)
+	fmt.Printf("NASHUBS_CERT_FINGERPRINT=%s\n", fp)
+	fmt.Printf("NASHUBS_VERSION=%s\n", cfg.Version)
 
 	// Ensure the agent is accessible via Synology Reverse Proxy / Cloudflare Tunnel
 	s.ensureSelfProxy()
@@ -61,7 +61,7 @@ func main() {
 	s.ensureAllProxies()
 
 	addr := ":" + cfg.Port
-	log.Printf("nasdeck-agent listening on https://0.0.0.0%s (TLS pinned by fingerprint)", addr)
+	log.Printf("nashubs-agent listening on https://0.0.0.0%s (TLS pinned by fingerprint)", addr)
 
 	srv := &http.Server{
 		Addr:    addr,

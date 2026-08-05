@@ -1,6 +1,6 @@
-# Giải phẫu Cấu trúc Mã nguồn Nasdeck Agent 🧩
+# Giải phẫu Cấu trúc Mã nguồn NasHubs Agent 🧩
 
-Nasdeck Agent được thiết kế theo tư duy "Microservice", sử dụng ngôn ngữ Golang để đạt được tốc độ thực thi cao và khả năng cross-compile dễ dàng mà không phụ thuộc vào các thư viện bên ngoài. 
+NasHubs Agent được thiết kế theo tư duy "Microservice", sử dụng ngôn ngữ Golang để đạt được tốc độ thực thi cao và khả năng cross-compile dễ dàng mà không phụ thuộc vào các thư viện bên ngoài. 
 
 Toàn bộ logic được chia tách thành các module (file `.go`) riêng biệt, mỗi module đảm nhận một trọng trách cụ thể trong hệ sinh thái.
 

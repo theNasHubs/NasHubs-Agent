@@ -1,19 +1,19 @@
-# Nasdeck Agent 🕵️‍♂️
+# NasHubs Agent 🕵️‍♂️
 
-**Nasdeck Agent** là một ứng dụng siêu nhẹ (Microservice) được viết bằng Golang, đóng vai trò như một "Điệp viên ngầm" được cài đặt trực tiếp trên hệ điều hành của NAS (Network Attached Storage), đặc biệt tối ưu cho Synology DSM.
+**NasHubs Agent** là một ứng dụng siêu nhẹ (Microservice) được viết bằng Golang, đóng vai trò như một "Điệp viên ngầm" được cài đặt trực tiếp trên hệ điều hành của NAS (Network Attached Storage), đặc biệt tối ưu cho Synology DSM.
 
-Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hóa từ ứng dụng di động **Nasdeck iOS App** và thực thi chúng ở cấp độ hệ thống, giúp bạn quản lý NAS mà không cần phải mở giao diện web DSM rườm rà.
+Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hóa từ ứng dụng di động **NasHubs iOS App** và thực thi chúng ở cấp độ hệ thống, giúp bạn quản lý NAS mà không cần phải mở giao diện web DSM rườm rà.
 
 ---
 
 ## 🛠 Nguyên lý Hoạt động
 
-- 👉 **[Đọc tài liệu phân tích chuyên sâu tại sao Nasdeck KHÔNG dùng SSH tại đây (Cơ chế Hoạt động).](AGENT_MECHANISM.md)**
+- 👉 **[Đọc tài liệu phân tích chuyên sâu tại sao NasHubs KHÔNG dùng SSH tại đây (Cơ chế Hoạt động).](AGENT_MECHANISM.md)**
 - 👉 **[Đọc tài liệu Giải phẫu Cấu trúc Mã nguồn (Modules) tại đây.](MODULES.md)**
 - 👉 **[Đọc bài học thực tiễn: Khắc phục lỗi Mạng Tailscale bằng Docker.](TAILSCALE_DEPLOYMENT.md)**
 - 👉 **[Đọc bài học thực tiễn: Gỡ lỗi "Thành công ảo" của Cloudflare Tunnel.](CLOUDFLARED_DEPLOYMENT.md)**
 
-Khác với các hệ thống quản lý NAS truyền thống, Nasdeck Agent được thiết kế với tư duy "Cloud-Native" và "Zero-Trust":
+Khác với các hệ thống quản lý NAS truyền thống, NasHubs Agent được thiết kế với tư duy "Cloud-Native" và "Zero-Trust":
 
 ### 1. Thao tác hệ thống qua Docker Socket
 Agent không chạy các lệnh shell nguy hiểm. Thay vào đó, nó giao tiếp trực tiếp với **Docker Daemon** thông qua file socket nội bộ (`/var/run/docker.sock`).
@@ -41,21 +41,21 @@ Chỉ cần bạn đã cài đặt Go (phiên bản 1.21 trở lên):
 
 ```bash
 # Clone repository
-git clone https://github.com/nasdeck/agent.git
+git clone https://github.com/nashubs/agent.git
 cd agent
 
 # Biên dịch cho Linux AMD64
-GOOS=linux GOARCH=amd64 go build -o nasdeck-agent-linux main.go
+GOOS=linux GOARCH=amd64 go build -o nashubs-agent-linux main.go
 
 # (Tuỳ chọn) Build cho ARM64 (Raspberry Pi)
-GOOS=linux GOARCH=arm64 go build -o nasdeck-agent-arm64 main.go
+GOOS=linux GOARCH=arm64 go build -o nashubs-agent-arm64 main.go
 ```
 
 ### 2. Triển khai (Deploy)
-Agent thường được đóng gói thành một Docker Image siêu nhỏ gọn (`ghcr.io/nasdeck/agent`). File `Dockerfile` đã được tối ưu hóa theo mô hình Multi-stage build.
+Agent thường được đóng gói thành một Docker Image siêu nhỏ gọn (`ghcr.io/thenashubs/nashubs-agent`). File `Dockerfile` đã được tối ưu hóa theo mô hình Multi-stage build.
 
 ```bash
-docker build -t ghcr.io/nasdeck/agent:latest .
+docker build -t ghcr.io/thenashubs/nashubs-agent:latest .
 ```
 
 ---
@@ -69,4 +69,4 @@ docker build -t ghcr.io/nasdeck/agent:latest .
 - `proxy.go`: Tương tác với Nginx để nạp cấu hình Reverse Proxy động.
 
 ---
-*Thuộc Hệ sinh thái Nasdeck. Cảm ơn bạn đã quan tâm đóng góp!*
+*Thuộc Hệ sinh thái NasHubs. Cảm ơn bạn đã quan tâm đóng góp!*

@@ -144,6 +144,56 @@ func TestUntrustedKeyRejected(t *testing.T) {
 	}
 }
 
+// TestBadSignatureDoesNotBurnNonce verifies the replay cache is only written
+// AFTER a valid signature. A forged request (correct ts/nonce, invalid sig)
+// must not consume the (ts,nonce) pair and block the legitimate signed request
+// that reuses it within the skew window.
+func TestBadSignatureDoesNotBurnNonce(t *testing.T) {
+	ts, priv, _ := newTestServer(t)
+	defer ts.Close()
+	c := client()
+	url := ts.URL + "/pair"
+	body, _ := json.Marshal(pairRequest{PairingSecret: "test-secret"})
+
+	fixedTs := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := base64.StdEncoding.EncodeToString([]byte("burn-nonce"))
+	pub := priv.Public().(ed25519.PublicKey)
+
+	// 1) Forged request: valid headers/ts/nonce but an all-zero (invalid) sig.
+	bad, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	bad.Header.Set(hdrKeyID, base64.StdEncoding.EncodeToString(pub))
+	bad.Header.Set(hdrTs, fixedTs)
+	bad.Header.Set(hdrNonce, nonce)
+	bad.Header.Set(hdrSig, base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)))
+	badResp, err := c.Do(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = badResp.Body.Close()
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("forged request status = %d, want 401", badResp.StatusCode)
+	}
+
+	// 2) Legitimate signed request reusing the SAME (ts,nonce) must still succeed.
+	sum := sha256.Sum256(body)
+	sigBase := []byte("POST\n/pair\n" + fixedTs + "\n" + nonce + "\n" + hex.EncodeToString(sum[:]))
+	sig := ed25519.Sign(priv, sigBase)
+	good, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	good.Header.Set(hdrKeyID, base64.StdEncoding.EncodeToString(pub))
+	good.Header.Set(hdrTs, fixedTs)
+	good.Header.Set(hdrNonce, nonce)
+	good.Header.Set(hdrSig, base64.StdEncoding.EncodeToString(sig))
+	goodResp, err := c.Do(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer goodResp.Body.Close()
+	if goodResp.StatusCode != 200 {
+		b, _ := io.ReadAll(goodResp.Body)
+		t.Fatalf("legit request after forged attempt = %d body=%s, want 200", goodResp.StatusCode, b)
+	}
+}
+
 func TestReplayRejected(t *testing.T) {
 	ts, priv, _ := newTestServer(t)
 	defer ts.Close()

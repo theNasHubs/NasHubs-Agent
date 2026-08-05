@@ -79,7 +79,7 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 			LanIP:       lanIP,
 			DsmPort:     "5001", // standard DSM HTTPS port
 			AgentDirect: fmt.Sprintf("https://%s:%s", lanIP, s.cfg.Port),
-			AgentProxy:  "/nasdeck-agent/",
+			AgentProxy:  "/nashubs-agent/",
 		},
 	}
 
@@ -180,7 +180,7 @@ func (s *server) handleConfigureAllProxies(w http.ResponseWriter, r *http.Reques
 			prefix = "/" + id
 		}
 
-		confFile := fmt.Sprintf("%s/dsm.nasdeck-%s.conf", s.cfg.NginxConfDir, id)
+		confFile := fmt.Sprintf("%s/dsm.nashubs-%s.conf", s.cfg.NginxConfDir, id)
 		if _, err := os.Stat(confFile); err == nil {
 			skipped = append(skipped, id)
 			continue // already exists
@@ -199,7 +199,7 @@ func (s *server) handleConfigureAllProxies(w http.ResponseWriter, r *http.Reques
 		if err := s.testNginx(); err != nil {
 			// Rollback all created configs
 			for _, id := range created {
-				confFile := fmt.Sprintf("%s/dsm.nasdeck-%s.conf", s.cfg.NginxConfDir, id)
+				confFile := fmt.Sprintf("%s/dsm.nashubs-%s.conf", s.cfg.NginxConfDir, id)
 				_ = os.Remove(confFile)
 			}
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -248,7 +248,7 @@ func (s *server) ensureAllProxies() {
 		if prefix == "" {
 			prefix = "/" + id
 		}
-		confFile := fmt.Sprintf("%s/dsm.nasdeck-%s.conf", s.cfg.NginxConfDir, id)
+		confFile := fmt.Sprintf("%s/dsm.nashubs-%s.conf", s.cfg.NginxConfDir, id)
 		if _, err := os.Stat(confFile); err == nil {
 			continue // already exists
 		}
@@ -279,7 +279,7 @@ func (s *server) probeTailscale() *tunnelStatus {
 
 	if state == stUp {
 		// Try to get tailscale status from the running container
-		cmd := exec.Command("docker", "exec", "nasdeck-tailscale", "tailscale", "status", "--json")
+		cmd := exec.Command("docker", "exec", "nashubs-tailscale", "tailscale", "status", "--json")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			// Extract IP and hostname from JSON output (lightweight parsing)
@@ -294,7 +294,7 @@ func (s *server) probeTailscale() *tunnelStatus {
 		}
 		// Fallback: try `tailscale ip -4`
 		if ts.IP == "" {
-			cmd2 := exec.Command("docker", "exec", "nasdeck-tailscale", "tailscale", "ip", "-4")
+			cmd2 := exec.Command("docker", "exec", "nashubs-tailscale", "tailscale", "ip", "-4")
 			if out2, err := cmd2.CombinedOutput(); err == nil {
 				ts.IP = strings.TrimSpace(string(out2))
 			}
@@ -320,7 +320,7 @@ func (s *server) probeCloudflare() *tunnelStatus {
 	return &tunnelStatus{Deployed: true, State: state}
 }
 
-// listProxyEntries scans nginx conf.d for nasdeck proxy rules.
+// listProxyEntries scans nginx conf.d for nashubs proxy rules.
 func (s *server) listProxyEntries() []proxyEntry {
 	entries, err := os.ReadDir(s.cfg.NginxConfDir)
 	if err != nil {
@@ -329,10 +329,10 @@ func (s *server) listProxyEntries() []proxyEntry {
 	var proxies []proxyEntry
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, "dsm.nasdeck-") || !strings.HasSuffix(name, ".conf") {
+		if !strings.HasPrefix(name, "dsm.nashubs-") || !strings.HasSuffix(name, ".conf") {
 			continue
 		}
-		id := strings.TrimSuffix(strings.TrimPrefix(name, "dsm.nasdeck-"), ".conf")
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "dsm.nashubs-"), ".conf")
 		if id == "agent" {
 			continue
 		}

@@ -1,4 +1,4 @@
-module github.com/nasdeck/agent
+module github.com/theNasHubs/NasHubs-Agent
 
 go 1.22
 

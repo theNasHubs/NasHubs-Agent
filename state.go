@@ -134,7 +134,7 @@ func (s *server) probeState(id, hostCompose string) string {
 	
 	// Fallback for manually deployed or non-compose containers
 	if state == stMissing {
-		containerName := "nasdeck-" + id
+		containerName := "nashubs-" + id
 		if exec.Command("docker", "inspect", containerName).Run() == nil {
 			// Container exists
 			if exec.Command("docker", "ps", "-q", "-f", "name=^/"+containerName+"$").Run() == nil {

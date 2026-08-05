@@ -32,9 +32,9 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.runCompose(st.HostPath, id, "down")
 	}
 
-	// Fallback: forcefully remove any container named nasdeck-{id}
+	// Fallback: forcefully remove any container named nashubs-{id}
 	// This ensures manually run or failed deployments are cleaned up.
-	containerName := "nasdeck-" + id
+	containerName := "nashubs-" + id
 	_ = exec.Command("docker", "rm", "-f", containerName).Run()
 
 	if err := os.RemoveAll(projectDir); err != nil {
@@ -46,7 +46,7 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 	if id == "cloudflared" {
 		quickDir := filepath.Join(s.cfg.DataDir, "cloudflared-quick")
 		if _, err := os.Stat(quickDir); err == nil {
-			_ = exec.Command("docker", "rm", "-f", "nasdeck-cloudflared-quick").Run()
+			_ = exec.Command("docker", "rm", "-f", "nashubs-cloudflared-quick").Run()
 			_ = os.RemoveAll(quickDir)
 		}
 	}

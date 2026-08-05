@@ -44,9 +44,9 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		cmd = exec.Command(argv[0], argv[1:]...)
 	} else {
-		// Fallback: no state.json — try `docker logs nasdeck-{id}` directly.
+		// Fallback: no state.json — try `docker logs nashubs-{id}` directly.
 		// This handles containers deployed via SSH bootstrap or Container Manager.
-		containerName := "nasdeck-" + id
+		containerName := "nashubs-" + id
 		argv := []string{"docker", "logs", "--tail", "200"}
 		if follow {
 			argv = append(argv, "-f")

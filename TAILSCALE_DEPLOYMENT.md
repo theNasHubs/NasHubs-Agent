@@ -1,6 +1,6 @@
 # Bài học Thực tiễn: Triển khai Tailscale bằng Docker 🐉
 
-Một trong những thử thách lớn nhất khi thiết lập mạng riêng ảo (VPN) trên Nasdeck là tích hợp Tailscale trực tiếp bằng Docker thay vì cài đặt bằng ứng dụng gốc của Synology (SPK). Việc chạy mạng ảo bên trong môi trường cô lập của Container dẫn đến rất nhiều "cái bẫy" nguy hiểm. 
+Một trong những thử thách lớn nhất khi thiết lập mạng riêng ảo (VPN) trên NasHubs là tích hợp Tailscale trực tiếp bằng Docker thay vì cài đặt bằng ứng dụng gốc của Synology (SPK). Việc chạy mạng ảo bên trong môi trường cô lập của Container dẫn đến rất nhiều "cái bẫy" nguy hiểm. 
 
 Tài liệu này đúc kết những bài học xương máu (Post-mortem) từ quá trình gỡ lỗi (troubleshooting) thực tế.
 
@@ -38,7 +38,7 @@ services:
 ## 2. Bài học về Sự mất trí nhớ (Amnesia) sau khi Khởi động lại
 
 ### Sự cố:
-Mỗi khi NAS mất điện hoặc Nasdeck Agent khởi động lại tiến trình cài đặt Tailscale, thiết bị NAS bị gán một IP nội bộ Tailscale hoàn toàn mới. Người dùng bị ngắt kết nối do iPhone vẫn ghi nhớ IP cũ.
+Mỗi khi NAS mất điện hoặc NasHubs Agent khởi động lại tiến trình cài đặt Tailscale, thiết bị NAS bị gán một IP nội bộ Tailscale hoàn toàn mới. Người dùng bị ngắt kết nối do iPhone vẫn ghi nhớ IP cũ.
 
 ### Phân tích nguyên nhân:
 Mặc định, Tailscale lưu trữ chứng chỉ đăng nhập (State) và Khóa bí mật (Node Key) vào bên trong hệ thống file ảo của Container (tại `/var/lib/tailscale`). 

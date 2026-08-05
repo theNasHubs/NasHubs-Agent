@@ -1,13 +1,27 @@
 # syntax=docker/dockerfile:1
 
-# ---- stage 1: build a static binary per target arch ----
-FROM golang:1.22-alpine AS build
+# ---- stage 1: cross-compile a static binary for the target arch ----
+# Pin the build stage to the BUILDER's native arch (fast) and cross-compile to
+# the requested target with GOOS/GOARCH — this makes `docker buildx --platform
+# linux/amd64,linux/arm64` build quickly without QEMU emulating the compiler.
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+
+# Copy module manifests first for layer caching; go.sum is required for a
+# verified, reproducible `go mod download` / build.
+COPY go.mod go.sum ./
 RUN go mod download
+
 COPY . .
-# CGO disabled → fully static, runs on any linux/{arm64,amd64} base.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/nashubs-agent .
+
+# buildx injects these automatically per target platform.
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+# CGO disabled → fully static, runs on any linux/{amd64,arm64} base.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/nashubs-agent .
 
 # ---- stage 2: runtime ----
 # docker:27-cli bundles the `docker` CLI + the compose plugin. The agent shells

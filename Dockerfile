@@ -28,6 +28,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # out to `docker compose`, talking to the HOST daemon through the mounted socket
 # (/var/run/docker.sock). No daemon runs inside this container.
 FROM docker:27-cli
+
+# Auto-links the GHCR package to its source repo (replaces the old manual
+# "Connect repository" button) and shows up on the package page.
+LABEL org.opencontainers.image.source="https://github.com/theNasHubs/NasHubs-Agent"
+LABEL org.opencontainers.image.description="NasHubs Agent — on-NAS control plane (deploy, reverse proxy, remote access)."
+LABEL org.opencontainers.image.licenses="proprietary"
+
 RUN apk add --no-cache ca-certificates nginx
 COPY --from=build /out/nashubs-agent /usr/local/bin/nashubs-agent
 

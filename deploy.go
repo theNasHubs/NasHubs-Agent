@@ -186,7 +186,20 @@ func ensureBindMountDirs(compose []byte) {
 // arbitrary directories on the NAS host filesystem.
 func isSafeMountPath(p string) bool {
 	cleaned := filepath.Clean(p)
-	return strings.HasPrefix(cleaned, "/volume1/") || strings.HasPrefix(cleaned, "/data/")
+	if strings.HasPrefix(cleaned, "/data/") {
+		return true
+	}
+	// Bất kỳ volume nào: /volume<digits>/...  (Synology có thể là volume1..N).
+	// filepath.Clean đã loại ".." nên không lo path traversal ra ngoài volume.
+	if strings.HasPrefix(cleaned, "/volume") {
+		rest := cleaned[len("/volume"):]
+		i := 0
+		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+			i++
+		}
+		return i > 0 && i < len(rest) && rest[i] == '/'
+	}
+	return false
 }
 
 // bindHostPath returns the host side of a bind volume entry like "/host:/cont"

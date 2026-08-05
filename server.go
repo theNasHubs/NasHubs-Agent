@@ -60,6 +60,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleViewer, s.handleRemoteStatus)))
 	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleViewer, s.handleGetCloudflare)))
 	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
+	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleViewer, s.handleListVolumes)))
 
 	// Mutating routes (admin and above).
 	mux.HandleFunc("POST /deploy", s.requireAuth(s.requireRole(RoleAdmin, s.handleDeploy)))

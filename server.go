@@ -57,6 +57,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /health/", s.requireAuth(s.requireRole(RoleViewer, s.handleHealth)))
 	mux.HandleFunc("GET /proxies", s.requireAuth(s.requireRole(RoleViewer, s.handleListProxies)))
 	mux.HandleFunc("GET /state", s.requireAuth(s.requireRole(RoleViewer, s.handleState)))
+	mux.HandleFunc("GET /media/status", s.requireAuth(s.requireRole(RoleViewer, s.handleMediaStatus)))
 	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleViewer, s.handleRemoteStatus)))
 	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleViewer, s.handleGetCloudflare)))
 	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))

@@ -21,6 +21,16 @@ import (
 // idSafe enforces a strict id charset to prevent path traversal / injection.
 var idSafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// reservedAppIDs are ids whose "nashubs-<id>" container name belongs to the agent itself.
+// Deploying or removing them would `docker rm -f nashubs-agent` mid-request, and since the
+// container is removed (not stopped) its restart policy never brings it back.
+var reservedAppIDs = map[string]bool{"agent": true}
+
+// validAppID reports whether id may be deployed, removed or rolled back.
+func validAppID(id string) bool {
+	return idSafe.MatchString(id) && !reservedAppIDs[id]
+}
+
 type deployRequest struct {
 	ID           string `json:"id"`
 	Compose      string `json:"compose"`      // rendered docker-compose.yml
@@ -45,7 +55,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad request", err))
 		return
 	}
-	if !idSafe.MatchString(req.ID) || req.Compose == "" {
+	if !validAppID(req.ID) || req.Compose == "" {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
 		return
 	}

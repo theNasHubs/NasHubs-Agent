@@ -80,3 +80,19 @@ func TestHasData(t *testing.T) {
 		})
 	}
 }
+
+func TestValidAppIDRejectsAgentOwnName(t *testing.T) {
+	if validAppID("agent") {
+		t.Fatal(`"agent" maps to the agent's own container and must be rejected`)
+	}
+	for _, id := range []string{"jellyfin", "cloudflared-quick", "hello-world", "Agent2"} {
+		if !validAppID(id) {
+			t.Errorf("expected %q to be accepted", id)
+		}
+	}
+	for _, id := range []string{"", "../x", "a b", "a/b"} {
+		if validAppID(id) {
+			t.Errorf("expected %q to be rejected", id)
+		}
+	}
+}

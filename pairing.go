@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"time"
 )
@@ -74,7 +75,7 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, errMap("pairing window expired", nil))
 		return
 	}
-	if req.PairingSecret != s.cfg.PairingSecret {
+	if subtle.ConstantTimeCompare([]byte(req.PairingSecret), []byte(s.cfg.PairingSecret)) != 1 {
 		writeJSON(w, http.StatusForbidden, errMap("pairing secret mismatch", nil))
 		return
 	}

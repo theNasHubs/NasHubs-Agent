@@ -79,18 +79,38 @@ func (ds *deviceStore) persistLocked() error {
 	if err != nil {
 		return err
 	}
+	// fsync before rename so a power loss cannot leave a truncated devices.json, which
+	// load() would treat as an empty store (un-revoking every device).
 	tmp := ds.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, ds.path)
 }
 
-// lookup returns the device for a keyID (or nil).
+// lookup returns a snapshot of the device for a keyID (or nil). It is a copy so callers can
+// read Role/RevokedAt without holding ds.mu while revoke() mutates the stored device.
 func (ds *deviceStore) lookup(keyID string) *Device {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	return ds.devices[keyID]
+	d := ds.devices[keyID]
+	if d == nil {
+		return nil
+	}
+	c := *d
+	return &c
 }
 
 // isEmpty reports whether there is no active (non-revoked) device yet.

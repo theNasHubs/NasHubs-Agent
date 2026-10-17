@@ -49,6 +49,16 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
 		return
 	}
+	if req.InternalPort != 0 {
+		prefix := req.PathPrefix
+		if prefix == "" {
+			prefix = "/" + req.ID
+		}
+		if !validAppProxy(prefix, req.InternalPort) {
+			writeJSON(w, http.StatusBadRequest, errMap("invalid internalPort or pathPrefix", nil))
+			return
+		}
+	}
 
 	sum := sha256.Sum256([]byte(req.Compose))
 	version := fmt.Sprintf("v%s", hex.EncodeToString(sum[:6])) // v + 12 hex chars

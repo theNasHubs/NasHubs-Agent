@@ -26,6 +26,16 @@ type proxyEntry struct {
 
 var pathPrefixSafe = regexp.MustCompile(`^/[a-z0-9_-]+$`)
 
+// appPrefixSafe validates reverse-proxy prefixes that arrive with /deploy or are read back from
+// state.json. They are interpolated into an nginx config included by DSM's own server blocks,
+// so only slash-separated slugs are allowed (templates use e.g. /apps/qbittorrent).
+var appPrefixSafe = regexp.MustCompile(`^(/[A-Za-z0-9_-]+)+$`)
+
+// validAppProxy reports whether prefix and port are safe to write into an nginx location block.
+func validAppProxy(prefix string, port int) bool {
+	return appPrefixSafe.MatchString(prefix) && port > 0 && port <= 65535
+}
+
 // handleProxy creates or removes an Nginx reverse proxy location block in
 // DSM's nginx config directory. After writing the config, it reloads nginx
 // so the change takes effect immediately.

@@ -26,6 +26,10 @@ var idSafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // container is removed (not stopped) its restart policy never brings it back.
 var reservedAppIDs = map[string]bool{"agent": true}
 
+// agentContainerName is the agent's own container. No deploy may ever name a
+// service this, nor rm it, or the deploy would kill the control plane.
+const agentContainerName = "nashubs-agent"
+
 // validAppID reports whether id may be deployed, removed or rolled back.
 func validAppID(id string) bool {
 	return idSafe.MatchString(id) && !reservedAppIDs[id]
@@ -59,6 +63,14 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if !validAppID(req.ID) || req.Compose == "" {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
 		return
+	}
+	// No service may claim the agent's own container name (any role): a later
+	// rm of it would remove the control plane mid-request.
+	for _, name := range composeContainerNames([]byte(req.Compose)) {
+		if name == agentContainerName {
+			writeJSON(w, http.StatusBadRequest, errMap("container_name "+agentContainerName+" is reserved", nil))
+			return
+		}
 	}
 	if req.InternalPort != 0 {
 		prefix := req.PathPrefix
@@ -100,10 +112,17 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// exist". Pre-create them (agent runs as root; harmless if already present).
 	ensureBindMountDirs([]byte(req.Compose))
 
-	// Forcefully remove any existing container with the exact target name.
-	// This prevents "Conflict" errors when migrating from the old agent (which
-	// used random project names) to the new agent (which uses explicit `-p req.ID`).
+	// Forcefully remove any existing container that would collide with this
+	// deploy: the project's own name, plus every container_name declared in the
+	// compose. An app installed by the old agent keeps the same container_name
+	// (templates are shared), so this clears the "Conflict" (422) on redeploy
+	// without scanning for or touching any other container or volume.
 	_ = exec.Command("docker", "rm", "-f", "nashubs-"+req.ID).Run()
+	for _, name := range composeContainerNames([]byte(req.Compose)) {
+		if name != "nashubs-"+req.ID && name != agentContainerName {
+			_ = exec.Command("docker", "rm", "-f", name).Run()
+		}
+	}
 
 	out := ""
 	if req.Pull {
@@ -215,6 +234,30 @@ func composeEnv(environ []string) []string {
 		}
 	}
 	return out
+}
+
+// dockerNameRe is Docker's own container-name grammar. A name that does not
+// match (e.g. one starting with "-") is skipped rather than passed to rm.
+var dockerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+// composeContainerNames returns the explicit container_name of each service.
+// Used to clear name conflicts on redeploy (incl. apps from the old agent).
+func composeContainerNames(compose []byte) []string {
+	var doc struct {
+		Services map[string]struct {
+			ContainerName string `yaml:"container_name"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &doc); err != nil {
+		return nil
+	}
+	var names []string
+	for _, svc := range doc.Services {
+		if n := svc.ContainerName; n != "" && dockerNameRe.MatchString(n) {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 // ensureBindMountDirs parses the compose for service volume bind mounts and

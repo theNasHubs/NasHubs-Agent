@@ -124,7 +124,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-create reverse proxy if deploy succeeded and port is specified
-	if runErr == nil && req.InternalPort > 0 {
+	if runErr == nil && req.InternalPort > 0 && s.nginxEnabled() {
 		prefix := req.PathPrefix
 		if prefix == "" {
 			prefix = "/" + req.ID

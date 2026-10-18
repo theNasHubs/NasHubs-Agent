@@ -43,6 +43,12 @@ func loadConfig() Config {
 	// the CLI process sees — which is the same mount the agent wrote to. Default
 	// HOST_DATA_DIR to DATA_DIR (override only for unusual split-mount setups).
 	c.HostDataDir = envOr("NASHUBS_HOST_DATA_DIR", c.DataDir)
+	// NASHUBS_NGINX_CONF_DIR=none turns the DSM reverse-proxy integration off
+	// entirely: no conf files are written and no privileged helper container is
+	// started to test/reload nginx. Use it when the agent does not run on DSM.
+	if nginxDisabledValue(c.NginxConfDir) {
+		c.NginxConfDir = ""
+	}
 	c.TrustedPublicKeys = map[string]bool{}
 	for _, k := range strings.Split(os.Getenv("NASHUBS_TRUSTED_PUBKEY"), ",") {
 		if k = strings.TrimSpace(k); k != "" {

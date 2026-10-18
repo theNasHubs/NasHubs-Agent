@@ -150,6 +150,10 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 // handleConfigureAllProxies creates reverse proxy rules for ALL deployed
 // mini-apps that have an internalPort, in a single batch. Idempotent.
 func (s *server) handleConfigureAllProxies(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusServiceUnavailable, errMap("reverse proxy disabled", errNginxDisabled))
+		return
+	}
 	entries, err := os.ReadDir(s.cfg.DataDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("read data dir", err))
@@ -334,6 +338,9 @@ func (s *server) probeCloudflare() *tunnelStatus {
 
 // listProxyEntries scans nginx conf.d for nashubs proxy rules.
 func (s *server) listProxyEntries() []proxyEntry {
+	if !s.nginxEnabled() {
+		return nil
+	}
 	entries, err := os.ReadDir(s.cfg.NginxConfDir)
 	if err != nil {
 		return nil

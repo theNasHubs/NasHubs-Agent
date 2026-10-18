@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -44,6 +45,10 @@ func validAppProxy(prefix string, port int) bool {
 // which DSM's main nginx.conf includes inside both the :5000 and :5001
 // server blocks (via `include conf.d/dsm.*.conf`).
 func (s *server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusServiceUnavailable, errMap("reverse proxy disabled", errNginxDisabled))
+		return
+	}
 	var req proxyRequest
 	if err := decodeBody(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errMap("bad request", err))
@@ -112,6 +117,10 @@ func (s *server) handleProxy(w http.ResponseWriter, r *http.Request) {
 // handleListProxies returns all active nashubs proxy rules by scanning the
 // nginx conf directory for dsm.nashubs-*.conf files.
 func (s *server) handleListProxies(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxies": []proxyEntry{}})
+		return
+	}
 	entries, err := os.ReadDir(s.cfg.NginxConfDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("read nginx conf dir", err))
@@ -174,8 +183,29 @@ location ^~ %s/ {
 `, pathPrefix, port, pathPrefix, pathPrefix, pathPrefix, port)
 }
 
+// errNginxDisabled is returned by every nginx operation when the reverse-proxy
+// integration is turned off (NASHUBS_NGINX_CONF_DIR=none).
+var errNginxDisabled = errors.New("reverse proxy integration is disabled (NASHUBS_NGINX_CONF_DIR=none)")
+
+// nginxDisabledValue reports whether a NASHUBS_NGINX_CONF_DIR value means "off".
+func nginxDisabledValue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "none", "off", "disabled":
+		return true
+	}
+	return false
+}
+
+// nginxEnabled reports whether the agent manages DSM's nginx conf.d.
+func (s *server) nginxEnabled() bool {
+	return s.cfg.NginxConfDir != ""
+}
+
 // testNginx runs `nginx -t` on the host to validate the config before reloading.
 func (s *server) testNginx() error {
+	if !s.nginxEnabled() {
+		return errNginxDisabled
+	}
 	// The agent is isolated, but has access to docker.sock.
 	// We spawn an ephemeral container entering the host's namespace to run nginx -t.
 	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-t")
@@ -188,6 +218,9 @@ func (s *server) testNginx() error {
 
 // reloadNginx sends the reload signal to the host's nginx process.
 func (s *server) reloadNginx() error {
+	if !s.nginxEnabled() {
+		return errNginxDisabled
+	}
 	// Try Synology's native synosystemctl first
 	cmdSyno := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "synosystemctl", "restart", "nginx")
 	if out, err := cmdSyno.CombinedOutput(); err == nil {
@@ -256,7 +289,9 @@ location ^~ /nashubs-agent/ {
 		return // already up to date
 	}
 
-	_ = os.WriteFile(confFile, []byte(conf), 0o644)
+	if err := os.WriteFile(confFile, []byte(conf), 0o644); err != nil {
+		return // nothing new on disk, so nothing to test or reload
+	}
 	if s.testNginx() == nil {
 		_ = s.reloadNginx()
 	}

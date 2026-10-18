@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,7 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		// Primary path: use docker compose logs with the deploy's compose file
 		argv := composeLogsArgs(s.composeArgs, id, st.HostPath, follow)
 		cmd = exec.Command(argv[0], argv[1:]...)
+		cmd.Env = composeEnv(os.Environ())
 	} else {
 		// Fallback: no state.json — try `docker logs nashubs-{id}` directly.
 		// This handles containers deployed via SSH bootstrap or Container Manager.

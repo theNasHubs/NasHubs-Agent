@@ -171,7 +171,7 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(composeEnv(os.Environ()),
 		"COMPOSE_COMPATIBILITY=true",
 		// Synology keeps docker/compose under these paths; harmless elsewhere.
 		"PATH="+os.Getenv("PATH")+":/var/packages/ContainerManager/target/usr/bin:/var/packages/Docker/target/usr/bin:/usr/local/bin",
@@ -181,6 +181,28 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	cmd.Stderr = &combined
 	err := cmd.Run()
 	return combined.String(), err
+}
+
+// composeEnvAllowed lists the only variables of the agent's environment that
+// the compose CLI receives. Compose interpolates ${VAR} from its environment,
+// so anything else (pairing secret, trusted keys, tokens, future settings)
+// could be copied into a deployed container. Templates are filled in by the
+// app before deploy and the agent writes no .env file, so nothing needs more.
+var composeEnvAllowed = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "TZ": true, "LANG": true, "LC_ALL": true,
+	"DOCKER_HOST": true, "DOCKER_CONFIG": true, "DOCKER_CONTEXT": true,
+	"DOCKER_CERT_PATH": true, "DOCKER_TLS_VERIFY": true, "DOCKER_API_VERSION": true,
+}
+
+// composeEnv returns the allowlisted subset of environ.
+func composeEnv(environ []string) []string {
+	out := make([]string, 0, len(composeEnvAllowed))
+	for _, kv := range environ {
+		if k, _, _ := strings.Cut(kv, "="); composeEnvAllowed[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // ensureBindMountDirs parses the compose for service volume bind mounts and

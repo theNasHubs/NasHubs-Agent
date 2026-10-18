@@ -90,6 +90,9 @@ func (p composePolicy) checkService(svc map[string]any) error {
 			return fmt.Errorf("%s is not allowed", k)
 		}
 	}
+	if n, _ := svc["container_name"].(string); n == agentContainerName {
+		return fmt.Errorf("container_name %s is reserved", agentContainerName)
+	}
 	if v, ok := svc["network_mode"]; ok {
 		// host networking is allowed (tailscale/cloudflared/pihole need it; it is
 		// networking, not a path into the host). container: is still rejected

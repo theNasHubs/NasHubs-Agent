@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -79,4 +81,34 @@ func splitLines(s string) []string {
 		lines = append(lines, cur)
 	}
 	return lines
+}
+
+// A compose that names a service `nashubs-agent` must be rejected (any role),
+// and must never produce `rm -f nashubs-agent`.
+func TestDeployRejectsAgentContainerName(t *testing.T) {
+	log := fakeComposeRecorder(t)
+	dir := t.TempDir()
+	s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}, composeArgs: []string{"docker", "compose"}}
+	body := `{"id":"evil","compose":"services:\n  x:\n    image: a\n    container_name: nashubs-agent\n"}`
+	rec := deployReq(t, s, body)
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400 (%s)", rec.Code, rec.Body)
+	}
+	for _, l := range splitLines(log()) {
+		if l == "rm -f nashubs-agent" {
+			t.Fatal("agent container was targeted for removal")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "evil")); !os.IsNotExist(err) {
+		t.Fatal("rejected deploy wrote files")
+	}
+}
+
+// Policy-level defense-in-depth for non-owner roles.
+func TestComposePolicyRejectsAgentContainerName(t *testing.T) {
+	p := testPolicy(t)
+	c := "services:\n  x:\n    image: a\n    container_name: nashubs-agent\n"
+	if err := p.check([]byte(c)); err == nil {
+		t.Fatal("policy accepted container_name nashubs-agent")
+	}
 }

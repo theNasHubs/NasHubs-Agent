@@ -37,6 +37,7 @@ type deployRequest struct {
 	Version      string `json:"version"`      // optional label; actual artifact = sha256(compose)[:12]
 	InternalPort int    `json:"internalPort"` // if > 0, auto-create reverse proxy after deploy
 	PathPrefix   string `json:"pathPrefix"`   // URL prefix for reverse proxy (default: /{id})
+	Pull         bool   `json:"pull"`         // if true, `compose pull` before `up` to fetch newer images
 }
 
 type deployResponse struct {
@@ -104,7 +105,18 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// used random project names) to the new agent (which uses explicit `-p req.ID`).
 	_ = exec.Command("docker", "rm", "-f", "nashubs-"+req.ID).Run()
 
-	out, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
+	out := ""
+	if req.Pull {
+		// Typed image refresh (replaces the removed generic /exec): pull newer
+		// images for this project before recreating. A pull failure is not fatal.
+		pullOut, pullErr := s.runCompose(hostCompose, req.ID, "pull")
+		out += pullOut
+		if pullErr != nil {
+			out += fmt.Sprintf("\n[warn] compose pull: %v", pullErr)
+		}
+	}
+	upOut, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
+	out += upOut
 
 	// Record current version so /logs /health /rollback can resolve it.
 	st := deployState{

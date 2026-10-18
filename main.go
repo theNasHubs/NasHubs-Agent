@@ -73,6 +73,12 @@ func main() {
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: s.routes(),
+		// Bound how long an unauthenticated client can hold a connection before the signature
+		// is even checked. No WriteTimeout: /logs?follow streams and /deploy waits on compose.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,

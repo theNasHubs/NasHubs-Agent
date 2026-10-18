@@ -76,6 +76,13 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// Container path (writable mount) and the matching host path the daemon sees.
 	dir := filepath.Join(s.cfg.DataDir, req.ID, version)
 	hostDir := filepath.Join(s.cfg.HostDataDir, req.ID, version)
+	if authFrom(r).role != RoleOwner {
+		pol := composePolicy{appID: req.ID, dataDir: s.cfg.DataDir, hostDataDir: s.cfg.HostDataDir, projectDir: dir}
+		if err := pol.check([]byte(req.Compose)); err != nil {
+			writeJSON(w, http.StatusForbidden, errMap("compose option requires the owner role", err))
+			return
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("mkdir", err))
 		return

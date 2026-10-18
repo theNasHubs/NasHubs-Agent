@@ -71,12 +71,9 @@ type authResult struct {
 
 // verifyRequest validates the HTTP signature. Returns the trusted keyId on success.
 func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error) {
-	keyID := r.Header.Get(hdrKeyID)
-	tsStr := r.Header.Get(hdrTs)
-	nonce := r.Header.Get(hdrNonce)
-	sigB64 := r.Header.Get(hdrSig)
-	if keyID == "" || tsStr == "" || nonce == "" || sigB64 == "" {
-		return authResult{}, fmt.Errorf("missing signature headers")
+	keyID, tsStr, nonce, sigB64, err := signatureHeaders(r.Header)
+	if err != nil {
+		return authResult{}, err
 	}
 
 	// 1) timestamp freshness
@@ -132,6 +129,35 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	}
 	s.devices.touch(keyID)
 	return authResult{keyID: keyID, role: role}, nil
+}
+
+// Header names used by the pre-rebrand ("Nasdeck") iOS app that is still in production. The
+// signature scheme and canonical string are identical; only the header prefix differs.
+const (
+	legacyHdrKeyID = "X-Nasdeck-Keyid"
+	legacyHdrTs    = "X-Nasdeck-Ts"
+	legacyHdrNonce = "X-Nasdeck-Nonce"
+	legacyHdrSig   = "X-Nasdeck-Sig"
+)
+
+// signatureHeaders returns the four signature headers from exactly ONE scheme: the current
+// X-NasHubs-* set or the legacy X-Nasdeck-* set. A request carrying headers of both schemes is
+// rejected as ambiguous, so fields can never be mixed across schemes (header confusion).
+func signatureHeaders(h http.Header) (keyID, ts, nonce, sig string, err error) {
+	current := h.Get(hdrKeyID) != "" || h.Get(hdrTs) != "" || h.Get(hdrNonce) != "" || h.Get(hdrSig) != ""
+	legacy := h.Get(legacyHdrKeyID) != "" || h.Get(legacyHdrTs) != "" || h.Get(legacyHdrNonce) != "" || h.Get(legacyHdrSig) != ""
+	switch {
+	case current && legacy:
+		return "", "", "", "", fmt.Errorf("ambiguous signature headers")
+	case legacy:
+		keyID, ts, nonce, sig = h.Get(legacyHdrKeyID), h.Get(legacyHdrTs), h.Get(legacyHdrNonce), h.Get(legacyHdrSig)
+	default:
+		keyID, ts, nonce, sig = h.Get(hdrKeyID), h.Get(hdrTs), h.Get(hdrNonce), h.Get(hdrSig)
+	}
+	if keyID == "" || ts == "" || nonce == "" || sig == "" {
+		return "", "", "", "", fmt.Errorf("missing signature headers")
+	}
+	return keyID, ts, nonce, sig, nil
 }
 
 // signatureBase builds the canonical message that is signed/verified.

@@ -70,3 +70,9 @@ docker build -t ghcr.io/thenashubs/nashubs-agent:latest .
 
 ---
 *Thuộc Hệ sinh thái NasHubs. Cảm ơn bạn đã quan tâm đóng góp!*
+# Device enrollment update
+
+See [DEVICE_ENROLLMENT.md](DEVICE_ENROLLMENT.md) for install-once provisioning,
+live owner invitations, root recovery and backward compatibility. The current
+request signing protocol is Ed25519; the TLS certificate uses ECDSA P-256.
+

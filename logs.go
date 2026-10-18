@@ -37,7 +37,7 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		// Primary path: use docker compose logs with the deploy's compose file
 		argv := append([]string{}, s.composeArgs...)
-		argv = append(argv, "-f", st.HostPath, "--project-directory", filepath.Dir(st.HostPath),
+		argv = append(argv, "-p", "nashubs-"+id, "-f", st.HostPath, "--project-directory", filepath.Dir(st.HostPath),
 			"logs", "--no-color", "--tail", "200")
 		if follow {
 			argv = append(argv, "-f")

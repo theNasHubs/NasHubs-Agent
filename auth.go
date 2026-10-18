@@ -52,10 +52,9 @@ func (n *nonceCache) checkAndAdd(key string, now time.Time) bool {
 			delete(n.seen, k)
 		}
 	}
-	// hard cap: if still too large after pruning, clear the whole cache.
-	// This sacrifices replay protection for the brief window but prevents OOM.
+	// Fail closed at capacity: never discard live replay protection.
 	if len(n.seen) >= maxNonces {
-		n.seen = map[string]time.Time{}
+		return false
 	}
 	if _, ok := n.seen[key]; ok {
 		return false
@@ -71,6 +70,15 @@ type authResult struct {
 
 // verifyRequest validates the HTTP signature. Returns the trusted keyId on success.
 func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error) {
+	return s.verifySignature(r, body, true)
+}
+
+// Only enrollment may prove possession without prior trust. It still requires
+// a one-use owner invitation; this does not authorize any other route.
+func (s *server) verifySignature(r *http.Request, body []byte, requireTrusted bool) (authResult, error) {
+	if s.devices.loadErr != nil {
+		return authResult{}, fmt.Errorf("device store unavailable")
+	}
 	keyID := r.Header.Get(hdrKeyID)
 	tsStr := r.Header.Get(hdrTs)
 	nonce := r.Header.Get(hdrNonce)
@@ -95,7 +103,7 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	if dev != nil && dev.revoked() {
 		return authResult{}, fmt.Errorf("device revoked")
 	}
-	if dev == nil && !s.cfg.TrustedPublicKeys[keyID] {
+	if requireTrusted && dev == nil && !s.cfg.TrustedPublicKeys[keyID] {
 		return authResult{}, fmt.Errorf("untrusted key")
 	}
 	pub, err := base64.StdEncoding.DecodeString(keyID)
@@ -127,6 +135,9 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	// 5) resolve role. An enrolled device uses its stored role; an env-trusted
 	// key that has not enrolled yet is treated as owner (the bootstrap device).
 	role := RoleOwner
+	if !requireTrusted {
+		role = ""
+	}
 	if dev != nil {
 		role = dev.Role
 	}

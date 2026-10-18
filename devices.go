@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ type deviceStore struct {
 	mu      sync.Mutex
 	path    string
 	devices map[string]*Device // keyID → device
+	loadErr error
 }
 
 func newDeviceStore(dir string) *deviceStore {
@@ -56,13 +58,21 @@ func newDeviceStore(dir string) *deviceStore {
 func (ds *deviceStore) load() {
 	b, err := os.ReadFile(ds.path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			ds.loadErr = err
+		}
 		return // no store yet
 	}
 	var list []*Device
-	if json.Unmarshal(b, &list) != nil {
+	if err := json.Unmarshal(b, &list); err != nil {
+		ds.loadErr = err
 		return
 	}
 	for _, d := range list {
+		if d == nil || d.KeyID == "" || (d.Role != RoleOwner && d.Role != RoleAdmin && d.Role != RoleViewer) || ds.devices[d.KeyID] != nil {
+			ds.loadErr = fmt.Errorf("invalid device store")
+			return
+		}
 		if d.KeyID != "" {
 			ds.devices[d.KeyID] = d
 		}
@@ -90,7 +100,11 @@ func (ds *deviceStore) persistLocked() error {
 func (ds *deviceStore) lookup(keyID string) *Device {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	return ds.devices[keyID]
+	if d := ds.devices[keyID]; d != nil {
+		cp := *d
+		return &cp
+	}
+	return nil
 }
 
 // isEmpty reports whether there is no active (non-revoked) device yet.
@@ -110,11 +124,20 @@ func (ds *deviceStore) isEmpty() bool {
 func (ds *deviceStore) enroll(keyID, label string, role Role) (*Device, error) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
+	if ds.loadErr != nil {
+		return nil, ds.loadErr
+	}
 	if d, ok := ds.devices[keyID]; ok && !d.revoked() {
-		return d, nil
+		cp := *d
+		return &cp, nil
+	}
+	if d := ds.devices[keyID]; d != nil && d.revoked() {
+		return nil, fmt.Errorf("device revoked")
 	}
 	idBytes := make([]byte, 8)
-	_, _ = rand.Read(idBytes)
+	if _, err := rand.Read(idBytes); err != nil {
+		return nil, err
+	}
 	d := &Device{
 		DeviceID: hex.EncodeToString(idBytes),
 		KeyID:    keyID,
@@ -124,9 +147,11 @@ func (ds *deviceStore) enroll(keyID, label string, role Role) (*Device, error) {
 	}
 	ds.devices[keyID] = d
 	if err := ds.persistLocked(); err != nil {
+		delete(ds.devices, keyID)
 		return nil, err
 	}
-	return d, nil
+	cp := *d
+	return &cp, nil
 }
 
 // list returns a snapshot copy of all devices.
@@ -151,7 +176,11 @@ func (ds *deviceStore) revoke(deviceID string) (bool, error) {
 				return true, nil
 			}
 			d.RevokedAt = time.Now().UTC().Format(time.RFC3339)
-			return true, ds.persistLocked()
+			if err := ds.persistLocked(); err != nil {
+				d.RevokedAt = ""
+				return false, err
+			}
+			return true, nil
 		}
 	}
 	return false, nil

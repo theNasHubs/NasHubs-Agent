@@ -33,6 +33,13 @@ func ensureCert(dataDir string) (tls.Certificate, string, error) {
 			return cert, fp, nil
 		}
 	}
+	// A missing/corrupt half of an existing identity must never silently rotate
+	// the pin for every enrolled iOS/Android device. Require explicit recovery.
+	for _, path := range []string{certPath, keyPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			return tls.Certificate{}, "", fmt.Errorf("existing TLS identity unavailable; restore certificate and key from backup")
+		}
+	}
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return tls.Certificate{}, "", fmt.Errorf("mkdir data dir: %w", err)
@@ -66,8 +73,8 @@ func generateSelfSigned() (tls.Certificate, []byte, error) {
 		Subject:      pkix.Name{CommonName: "nashubs-agent"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().AddDate(10, 0, 0),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		// No DNSNames/IPAddresses: the client pins this certificate by SHA-256
 		// fingerprint and skips hostname validation, so it works for any NAS address.
 	}

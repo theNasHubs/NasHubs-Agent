@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -78,6 +80,24 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, errMap("pairing secret mismatch", nil))
 		return
 	}
+	// Persist consumption across restarts without storing the bootstrap secret.
+	// A disk failure fails closed; root can issue a fresh invitation instead.
+	marker := filepath.Join(s.cfg.DataDir, ".bootstrap-"+invitationHash(s.cfg.PairingSecret)+".used")
+	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			writeJSON(w, 403, errMap("pairing already completed", nil))
+		} else {
+			writeJSON(w, 500, errMap("persist bootstrap consumption", nil))
+		}
+		return
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		writeJSON(w, 500, errMap("persist bootstrap consumption", nil))
+		return
+	}
+	f.Close()
 
 	role := RoleAdmin
 	if s.devices.isEmpty() {

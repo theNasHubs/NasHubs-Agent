@@ -183,18 +183,24 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	return combined.String(), err
 }
 
-// composeEnv drops the agent's own configuration (pairing secret, trusted
-// keys, ...) from the environment handed to the compose CLI. Compose
-// interpolates ${VAR} from its environment, so otherwise a deployed compose
-// could copy those values into a container.
+// composeEnvAllowed lists the only variables of the agent's environment that
+// the compose CLI receives. Compose interpolates ${VAR} from its environment,
+// so anything else (pairing secret, trusted keys, tokens, future settings)
+// could be copied into a deployed container. Templates are filled in by the
+// app before deploy and the agent writes no .env file, so nothing needs more.
+var composeEnvAllowed = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "TZ": true, "LANG": true, "LC_ALL": true,
+	"DOCKER_HOST": true, "DOCKER_CONFIG": true, "DOCKER_CONTEXT": true,
+	"DOCKER_CERT_PATH": true, "DOCKER_TLS_VERIFY": true, "DOCKER_API_VERSION": true,
+}
+
+// composeEnv returns the allowlisted subset of environ.
 func composeEnv(environ []string) []string {
-	out := make([]string, 0, len(environ))
+	out := make([]string, 0, len(composeEnvAllowed))
 	for _, kv := range environ {
-		k, _, _ := strings.Cut(kv, "=")
-		if u := strings.ToUpper(k); strings.HasPrefix(u, "NASHUBS_") || strings.HasPrefix(u, "NASDECK_") {
-			continue
+		if k, _, _ := strings.Cut(kv, "="); composeEnvAllowed[k] {
+			out = append(out, kv)
 		}
-		out = append(out, kv)
 	}
 	return out
 }

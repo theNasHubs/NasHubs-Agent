@@ -27,10 +27,12 @@ const (
 	hdrNonce = "X-NasHubs-Nonce"
 	hdrSig   = "X-NasHubs-Sig"
 
-	maxSkew   = 60 * time.Second
-	nonceTTL  = 2 * time.Minute
-	maxNonces = 50_000 // hard cap to prevent unbounded memory growth under burst
+	maxSkew  = 60 * time.Second
+	nonceTTL = 2 * time.Minute
 )
+
+// maxNonces is the hard cap on the replay cache (var so tests can shrink it).
+var maxNonces = 50_000
 
 // nonceCache prevents replay of previously seen (ts,nonce) pairs.
 type nonceCache struct {
@@ -52,10 +54,20 @@ func (n *nonceCache) checkAndAdd(key string, now time.Time) bool {
 			delete(n.seen, k)
 		}
 	}
-	// hard cap: if still too large after pruning, clear the whole cache.
-	// This sacrifices replay protection for the brief window but prevents OOM.
+	// Hard cap without opening a replay window. A nonce older than maxSkew can
+	// never be replayed (verifyRequest rejects its timestamp), so those are safe
+	// to forget first. If the cache is STILL full, every remaining nonce is
+	// within the replay window — fail closed (reject the new request) rather
+	// than evict one and let it be replayed.
 	if len(n.seen) >= maxNonces {
-		n.seen = map[string]time.Time{}
+		for k, tSeen := range n.seen {
+			if now.Sub(tSeen) > maxSkew {
+				delete(n.seen, k)
+			}
+		}
+		if len(n.seen) >= maxNonces {
+			return false
+		}
 	}
 	if _, ok := n.seen[key]; ok {
 		return false

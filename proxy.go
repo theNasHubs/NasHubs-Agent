@@ -208,7 +208,7 @@ func (s *server) testNginx() error {
 	}
 	// The agent is isolated, but has access to docker.sock.
 	// We spawn an ephemeral container entering the host's namespace to run nginx -t.
-	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-t")
+	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-t")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
@@ -222,13 +222,13 @@ func (s *server) reloadNginx() error {
 		return errNginxDisabled
 	}
 	// Try Synology's native synosystemctl first
-	cmdSyno := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "synosystemctl", "restart", "nginx")
+	cmdSyno := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "synosystemctl", "restart", "nginx")
 	if out, err := cmdSyno.CombinedOutput(); err == nil {
 		_ = out
 		return nil
 	}
 	// Fallback to standard nginx reload
-	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-s", "reload")
+	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-s", "reload")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)

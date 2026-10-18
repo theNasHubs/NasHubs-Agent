@@ -55,6 +55,9 @@ func main() {
 		// Allow a handful of pairing attempts per client IP within the window
 		// (the app retries while the container boots).
 		pairLimiter: newRateLimiter(10, 5*time.Minute),
+		// Generous per-IP cap for all signed requests: normal polling is well
+		// under this; a flood is rejected before the body is read.
+		reqLimiter: newRateLimiter(240, 10*time.Second),
 	}
 	log.Printf("using compose: %v", s.composeArgs)
 

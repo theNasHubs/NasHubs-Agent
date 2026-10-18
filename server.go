@@ -22,6 +22,7 @@ type server struct {
 	devices     *deviceStore
 	startedAt   time.Time    // for the pairing TTL window
 	pairLimiter *rateLimiter // throttles /pair attempts per client IP
+	reqLimiter  *rateLimiter // throttles ALL signed requests per client IP (DoS guard)
 
 	pairMu          sync.Mutex // serialises the enroll decision
 }
@@ -111,6 +112,13 @@ func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
 // handler with the body restored and the auth result in context.
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Per-IP rate limit before doing any work (body read, hashing, verify),
+		// so an unauthenticated flood is cheap to reject. Generous enough for
+		// normal polling of /state, /health and /logs.
+		if s.reqLimiter != nil && !s.reqLimiter.allow(clientIP(r)) {
+			writeJSON(w, http.StatusTooManyRequests, errMap("rate limit exceeded", nil))
+			return
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20)) // 4 MiB cap
 		_ = r.Body.Close()
 		if err != nil {

@@ -90,7 +90,6 @@ func TestComposePolicyRejectsHostAccess(t *testing.T) {
 		"pid host":              svc("    pid: host\n"),
 		"ipc host":              svc("    ipc: host\n"),
 		"userns host":           svc("    userns_mode: host\n"),
-		"network host":          svc("    network_mode: host\n"),
 		"network container":     svc("    network_mode: container:nashubs-agent\n"),
 		"network interpolated":  svc("    network_mode: ${NET}\n"),
 		"cap_add":               svc("    cap_add: [SYS_ADMIN]\n"),
@@ -171,5 +170,103 @@ func TestDeployPolicyAppliesToAdminOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(data, "evil")); !os.IsNotExist(err) {
 		t.Fatalf("rejected deploy wrote files: %v", err)
+	}
+}
+
+// FIX-2: the refinement must allow exactly the 5 stock templates' needs for a
+// non-owner, while every root-escape vector still DENYs.
+func TestComposePolicyFix2Allows(t *testing.T) {
+	p := testPolicy(t)
+	ok := map[string]string{
+		"pihole cap NET_ADMIN + host-net": `
+services:
+  pihole:
+    image: pihole/pihole
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    volumes:
+      - /volume1/docker/pihole/etc:/etc/pihole
+`,
+		"cloudflared host-net + named cf-creds volume": `
+services:
+  cf:
+    image: cloudflare/cloudflared
+    user: root
+    network_mode: "host"
+    volumes:
+      - cf-creds:/root/.cloudflared
+volumes:
+  cf-creds:
+    name: nashubs-cf-creds
+`,
+		"immich localtime RO bind": `
+services:
+  s:
+    image: ghcr.io/immich-app/immich-server:release
+    volumes:
+      - /volume1/photos:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports: ["2283:2283"]
+`,
+		"tun device bind + NET_ADMIN (vpn, no sys_module)": `
+services:
+  vpn:
+    image: tailscale/tailscale
+    network_mode: host
+    cap_add: [net_admin, net_raw]
+    volumes:
+      - /volume1/appdata/ts:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+`,
+		"timezone RO long syntax": `
+services:
+  s:
+    image: x
+    volumes:
+      - type: bind
+        source: /etc/timezone
+        target: /etc/timezone
+        read_only: true
+`,
+	}
+	for name, c := range ok {
+		if err := p.check([]byte(c)); err != nil {
+			t.Errorf("%s: rejected: %v", name, err)
+		}
+	}
+}
+
+// FIX-2 must NOT open any escape. Re-assert the whole dangerous set still DENYs,
+// including new near-miss bypasses created by the relaxation.
+func TestComposePolicyFix2StillDenies(t *testing.T) {
+	p := testPolicy(t)
+	svc := func(body string) string { return "services:\n  a:\n    image: x\n" + body }
+	bad := map[string]string{
+		"privileged":                 svc("    privileged: true\n"),
+		"cap SYS_ADMIN":              svc("    cap_add: [SYS_ADMIN]\n"),
+		"cap SYS_MODULE (tailscale)": svc("    cap_add: [NET_ADMIN, SYS_MODULE]\n"),
+		"cap ALL":                    svc("    cap_add: [ALL]\n"),
+		"cap SYS_PTRACE":             svc("    cap_add: [sys_ptrace]\n"),
+		"cap CAP_SYS_ADMIN prefixed": svc("    cap_add: [CAP_SYS_ADMIN]\n"),
+		"cap non-string":             svc("    cap_add: [{a: b}]\n"),
+		"network container":          svc("    network_mode: container:nashubs-agent\n"),
+		"network interpolated":       svc("    network_mode: ${X}\n"),
+		"pid host":                   svc("    pid: host\n"),
+		"docker.sock bind":           svc("    volumes: [\"/var/run/docker.sock:/s\"]\n"),
+		"root bind":                  svc("    volumes: [\"/:/host\"]\n"),
+		"etc bind (not localtime)":   svc("    volumes: [\"/etc:/x\"]\n"),
+		"localtime RW (not ro)":      svc("    volumes: [\"/etc/localtime:/etc/localtime\"]\n"),
+		"localtime RW long":          svc("    volumes:\n      - {type: bind, source: /etc/localtime, target: /etc/localtime}\n"),
+		"passwd via localtime-ish":   svc("    volumes: [\"/etc/passwd:/etc/localtime:ro\"]\n"),
+		"tun sibling device":         svc("    volumes: [\"/dev/net/tap:/dev/net/tap\"]\n"),
+		"device /dev/sda":            svc("    devices: [\"/dev/sda:/dev/sda\"]\n"),
+		"named volume driver_opts":   svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    name: x\n    driver_opts: {type: none, o: bind, device: /}\n",
+		"named volume external":      svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    external: true\n",
+		"host net external network":  svc("") + "networks:\n  n:\n    name: host\n    external: true\n",
+	}
+	for name, c := range bad {
+		if err := p.check([]byte(c)); err == nil {
+			t.Errorf("%s: ACCEPTED (must be denied)", name)
+		}
 	}
 }

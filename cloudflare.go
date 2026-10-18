@@ -30,7 +30,7 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	out, err := exec.Command("docker", "run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", "alpine", "sh", "-c", "ls /root/.cloudflared/*.json").CombinedOutput()
+	out, err := exec.Command("docker", "run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", helperImage, "sh", "-c", "ls /root/.cloudflared/*.json").CombinedOutput()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("failed to read cf-creds volume", fmt.Errorf("%s: %s", err, string(out))))
 		return
@@ -66,7 +66,7 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 
 	configYAML := buf.String()
 
-	writeCmd := exec.Command("docker", "run", "--rm", "-i", "-v", "nashubs-cf-creds:/root/.cloudflared", "alpine", "sh", "-c", "cat > /root/.cloudflared/config.yml")
+	writeCmd := exec.Command("docker", "run", "--rm", "-i", "-v", "nashubs-cf-creds:/root/.cloudflared", helperImage, "sh", "-c", "cat > /root/.cloudflared/config.yml")
 	writeCmd.Stdin = strings.NewReader(configYAML)
 	if out, err := writeCmd.CombinedOutput(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("failed to write config.yml", fmt.Errorf("%s: %s", err, string(out))))
@@ -74,7 +74,7 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 	}
 
 	for _, rule := range req.Ingress {
-		routeCmd := exec.Command("docker", "run", "--rm", "--user", "root", "-v", "nashubs-cf-creds:/root/.cloudflared", "cloudflare/cloudflared:latest", "tunnel", "route", "dns", "-f", uuid, rule.Hostname)
+		routeCmd := exec.Command("docker", "run", "--rm", "--user", "root", "-v", "nashubs-cf-creds:/root/.cloudflared", cloudflaredImage, "tunnel", "route", "dns", "-f", uuid, rule.Hostname)
 		outRoute, errRoute := routeCmd.CombinedOutput()
 		if errRoute != nil {
 			// If it's just "already exists", we can ignore it.
@@ -96,7 +96,7 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *server) handleGetCloudflare(w http.ResponseWriter, r *http.Request) {
-	out, err := exec.Command("docker", "run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", "alpine", "cat", "/root/.cloudflared/config.yml").CombinedOutput()
+	out, err := exec.Command("docker", "run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", helperImage, "cat", "/root/.cloudflared/config.yml").CombinedOutput()
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,

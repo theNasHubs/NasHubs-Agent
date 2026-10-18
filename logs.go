@@ -36,12 +36,7 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	st, err := loadState(s.cfg.DataDir, id)
 	if err == nil {
 		// Primary path: use docker compose logs with the deploy's compose file
-		argv := append([]string{}, s.composeArgs...)
-		argv = append(argv, "-f", st.HostPath, "--project-directory", filepath.Dir(st.HostPath),
-			"logs", "--no-color", "--tail", "200")
-		if follow {
-			argv = append(argv, "-f")
-		}
+		argv := composeLogsArgs(s.composeArgs, id, st.HostPath, follow)
 		cmd = exec.Command(argv[0], argv[1:]...)
 	} else {
 		// Fallback: no state.json — try `docker logs nashubs-{id}` directly.
@@ -93,4 +88,17 @@ func (s *sseWriter) Write(p []byte) (int, error) {
 		s.f.Flush()
 	}
 	return len(p), nil
+}
+
+// composeLogsArgs builds `docker compose logs` for a deployed app. It must target the same compose
+// project as deploy (runCompose: -p nashubs-<id>); without -p, compose derives the project name from
+// the artifact directory (the version hash) and finds no containers, so /logs was always empty.
+func composeLogsArgs(compose []string, id, hostCompose string, follow bool) []string {
+	argv := append([]string{}, compose...)
+	argv = append(argv, "-p", "nashubs-"+id, "-f", hostCompose, "--project-directory", filepath.Dir(hostCompose),
+		"logs", "--no-color", "--tail", "200")
+	if follow {
+		argv = append(argv, "-f")
+	}
+	return argv
 }

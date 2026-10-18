@@ -171,7 +171,7 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(composeEnv(os.Environ()),
 		"COMPOSE_COMPATIBILITY=true",
 		// Synology keeps docker/compose under these paths; harmless elsewhere.
 		"PATH="+os.Getenv("PATH")+":/var/packages/ContainerManager/target/usr/bin:/var/packages/Docker/target/usr/bin:/usr/local/bin",
@@ -181,6 +181,22 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	cmd.Stderr = &combined
 	err := cmd.Run()
 	return combined.String(), err
+}
+
+// composeEnv drops the agent's own configuration (pairing secret, trusted
+// keys, ...) from the environment handed to the compose CLI. Compose
+// interpolates ${VAR} from its environment, so otherwise a deployed compose
+// could copy those values into a container.
+func composeEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		if u := strings.ToUpper(k); strings.HasPrefix(u, "NASHUBS_") || strings.HasPrefix(u, "NASDECK_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // ensureBindMountDirs parses the compose for service volume bind mounts and

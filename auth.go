@@ -121,9 +121,10 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 		return authResult{}, fmt.Errorf("replay detected")
 	}
 
-	// 5) resolve role. An enrolled device uses its stored role; an env-trusted
-	// key that has not enrolled yet is treated as owner (the bootstrap device).
-	role := RoleOwner
+	// 5) resolve role. Only an enrolled device has a role. An env-trusted key that has not
+	// paired yet gets none: it can call /pair (requireAuth only) and nothing else, so a key
+	// injected at bootstrap must enrol — and becomes visible and revocable — before it can act.
+	role := Role("")
 	if dev != nil {
 		role = dev.Role
 	}

@@ -49,7 +49,7 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Single critical section so concurrent retries from the same device don't
-	// race on the one-time flag or double-enroll.
+	// double-enroll.
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
 
@@ -62,13 +62,12 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// New key → must present the one-time secret within the window.
+	// New key → must present the pairing secret within the window. Only keys trusted at bootstrap
+	// (env) reach this handler at all, and each enrols once; every other request from an env key
+	// is refused until it has paired (see verifyRequest), so a second bootstrap key (another
+	// device of the same owner) can still pair within the window.
 	if s.cfg.PairingSecret == "" {
 		writeJSON(w, http.StatusForbidden, errMap("no pairing secret configured", nil))
-		return
-	}
-	if s.pairingConsumed {
-		writeJSON(w, http.StatusForbidden, errMap("pairing already completed", nil))
 		return
 	}
 	if time.Since(s.startedAt) > pairingTTL {
@@ -93,7 +92,6 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errMap("enroll device", err))
 		return
 	}
-	s.pairingConsumed = true
 
 	writeJSON(w, http.StatusOK, pairResponse{
 		OK: true, CertFingerprint: s.certFingerprint, Version: s.cfg.Version,

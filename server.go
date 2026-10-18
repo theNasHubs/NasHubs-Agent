@@ -23,8 +23,7 @@ type server struct {
 	startedAt   time.Time    // for the pairing TTL window
 	pairLimiter *rateLimiter // throttles /pair attempts per client IP
 
-	pairMu          sync.Mutex // guards pairingConsumed + the enroll decision
-	pairingConsumed bool       // one-time pairing secret already used
+	pairMu          sync.Mutex // serialises the enroll decision
 }
 
 // detectCompose picks the compose invocation available on the host. DSM 7.0's
@@ -82,6 +81,10 @@ func (s *server) routes() http.Handler {
 func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role := authFrom(r).role
+		if role == "" {
+			writeJSON(w, http.StatusForbidden, errMap("device not paired", nil))
+			return
+		}
 		ok := false
 		switch min {
 		case RoleViewer:

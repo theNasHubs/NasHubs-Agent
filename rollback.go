@@ -13,7 +13,7 @@ import (
 // deployed artifact and re-runs `docker compose up -d`.
 func (s *server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/rollback/")
-	if !idSafe.MatchString(id) {
+	if !validAppID(id) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
 		return
 	}

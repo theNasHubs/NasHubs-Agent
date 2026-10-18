@@ -150,6 +150,10 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 // handleConfigureAllProxies creates reverse proxy rules for ALL deployed
 // mini-apps that have an internalPort, in a single batch. Idempotent.
 func (s *server) handleConfigureAllProxies(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusServiceUnavailable, errMap("reverse proxy disabled", errNginxDisabled))
+		return
+	}
 	entries, err := os.ReadDir(s.cfg.DataDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("read data dir", err))
@@ -178,6 +182,10 @@ func (s *server) handleConfigureAllProxies(w http.ResponseWriter, r *http.Reques
 		prefix := st.PathPrefix
 		if prefix == "" {
 			prefix = "/" + id
+		}
+		if !validAppProxy(prefix, st.InternalPort) {
+			errors = append(errors, fmt.Sprintf("%s: invalid proxy settings in state", id))
+			continue
 		}
 
 		confFile := fmt.Sprintf("%s/dsm.nashubs-%s.conf", s.cfg.NginxConfDir, id)
@@ -231,7 +239,7 @@ func (s *server) ensureAllProxies() {
 		return
 	}
 
-	needReload := false
+	var written []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -248,19 +256,27 @@ func (s *server) ensureAllProxies() {
 		if prefix == "" {
 			prefix = "/" + id
 		}
+		if !validAppProxy(prefix, st.InternalPort) {
+			continue
+		}
 		confFile := fmt.Sprintf("%s/dsm.nashubs-%s.conf", s.cfg.NginxConfDir, id)
 		if _, err := os.Stat(confFile); err == nil {
 			continue // already exists
 		}
 		conf := generateNginxConf(prefix, st.InternalPort)
 		if os.WriteFile(confFile, []byte(conf), 0o644) == nil {
-			needReload = true
+			written = append(written, confFile)
 		}
 	}
 
-	if needReload {
+	if len(written) > 0 {
 		if s.testNginx() == nil {
 			_ = s.reloadNginx()
+		} else {
+			// Never leave a config behind that would make DSM's nginx fail its next reload.
+			for _, f := range written {
+				_ = os.Remove(f)
+			}
 		}
 	}
 }
@@ -322,6 +338,9 @@ func (s *server) probeCloudflare() *tunnelStatus {
 
 // listProxyEntries scans nginx conf.d for nashubs proxy rules.
 func (s *server) listProxyEntries() []proxyEntry {
+	if !s.nginxEnabled() {
+		return nil
+	}
 	entries, err := os.ReadDir(s.cfg.NginxConfDir)
 	if err != nil {
 		return nil

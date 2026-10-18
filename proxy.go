@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -26,6 +27,16 @@ type proxyEntry struct {
 
 var pathPrefixSafe = regexp.MustCompile(`^/[a-z0-9_-]+$`)
 
+// appPrefixSafe validates reverse-proxy prefixes that arrive with /deploy or are read back from
+// state.json. They are interpolated into an nginx config included by DSM's own server blocks,
+// so only slash-separated slugs are allowed (templates use e.g. /apps/qbittorrent).
+var appPrefixSafe = regexp.MustCompile(`^(/[A-Za-z0-9_-]+)+$`)
+
+// validAppProxy reports whether prefix and port are safe to write into an nginx location block.
+func validAppProxy(prefix string, port int) bool {
+	return appPrefixSafe.MatchString(prefix) && port > 0 && port <= 65535
+}
+
 // handleProxy creates or removes an Nginx reverse proxy location block in
 // DSM's nginx config directory. After writing the config, it reloads nginx
 // so the change takes effect immediately.
@@ -34,6 +45,10 @@ var pathPrefixSafe = regexp.MustCompile(`^/[a-z0-9_-]+$`)
 // which DSM's main nginx.conf includes inside both the :5000 and :5001
 // server blocks (via `include conf.d/dsm.*.conf`).
 func (s *server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusServiceUnavailable, errMap("reverse proxy disabled", errNginxDisabled))
+		return
+	}
 	var req proxyRequest
 	if err := decodeBody(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errMap("bad request", err))
@@ -102,6 +117,10 @@ func (s *server) handleProxy(w http.ResponseWriter, r *http.Request) {
 // handleListProxies returns all active nashubs proxy rules by scanning the
 // nginx conf directory for dsm.nashubs-*.conf files.
 func (s *server) handleListProxies(w http.ResponseWriter, r *http.Request) {
+	if !s.nginxEnabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxies": []proxyEntry{}})
+		return
+	}
 	entries, err := os.ReadDir(s.cfg.NginxConfDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("read nginx conf dir", err))
@@ -164,11 +183,32 @@ location ^~ %s/ {
 `, pathPrefix, port, pathPrefix, pathPrefix, pathPrefix, port)
 }
 
+// errNginxDisabled is returned by every nginx operation when the reverse-proxy
+// integration is turned off (NASHUBS_NGINX_CONF_DIR=none).
+var errNginxDisabled = errors.New("reverse proxy integration is disabled (NASHUBS_NGINX_CONF_DIR=none)")
+
+// nginxDisabledValue reports whether a NASHUBS_NGINX_CONF_DIR value means "off".
+func nginxDisabledValue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "none", "off", "disabled":
+		return true
+	}
+	return false
+}
+
+// nginxEnabled reports whether the agent manages DSM's nginx conf.d.
+func (s *server) nginxEnabled() bool {
+	return s.cfg.NginxConfDir != ""
+}
+
 // testNginx runs `nginx -t` on the host to validate the config before reloading.
 func (s *server) testNginx() error {
+	if !s.nginxEnabled() {
+		return errNginxDisabled
+	}
 	// The agent is isolated, but has access to docker.sock.
 	// We spawn an ephemeral container entering the host's namespace to run nginx -t.
-	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-t")
+	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-t")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
@@ -178,14 +218,17 @@ func (s *server) testNginx() error {
 
 // reloadNginx sends the reload signal to the host's nginx process.
 func (s *server) reloadNginx() error {
+	if !s.nginxEnabled() {
+		return errNginxDisabled
+	}
 	// Try Synology's native synosystemctl first
-	cmdSyno := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "synosystemctl", "restart", "nginx")
+	cmdSyno := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "synosystemctl", "restart", "nginx")
 	if out, err := cmdSyno.CombinedOutput(); err == nil {
 		_ = out
 		return nil
 	}
 	// Fallback to standard nginx reload
-	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-s", "reload")
+	cmd := exec.Command("docker", "run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "nginx", "-s", "reload")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
@@ -241,13 +284,61 @@ location ^~ /nashubs-agent/ {
     proxy_buffering off;
     proxy_request_buffering off;
 }`
-	existing, err := os.ReadFile(confFile)
-	if err == nil && string(existing) == conf {
+	s.installConf(confFile, conf)
+	s.ensureLegacySelfProxy()
+}
+
+// legacySelfProxyConf is the location the Nasdeck-era agent installed. The
+// Nasdeck-era iOS app (still in production) falls back to /nasdeck-agent/ when
+// it reaches the agent through DSM's reverse proxy.
+const legacySelfProxyConf = `# Auto-generated by NasHubs Agent: legacy path for Nasdeck-era clients
+location = /nasdeck-agent {
+    absolute_redirect off;
+    return 301 /nasdeck-agent/;
+}
+
+location ^~ /nasdeck-agent/ {
+    proxy_pass https://127.0.0.1:8443/;
+    proxy_ssl_verify off;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_request_buffering off;
+}`
+
+// ensureLegacySelfProxy installs dsm.nasdeck-agent.conf only when it does not
+// exist. A file left by the Nasdeck-era agent already proxies the same path to
+// the same port, so it is kept as is; reusing its name means the two can never
+// define the location twice.
+func (s *server) ensureLegacySelfProxy() {
+	confFile := filepath.Join(s.cfg.NginxConfDir, "dsm.nasdeck-agent.conf")
+	if _, err := os.Lstat(confFile); err == nil || !os.IsNotExist(err) {
+		return
+	}
+	s.installConf(confFile, legacySelfProxyConf)
+}
+
+// installConf writes an nginx conf file, validates the whole config with
+// nginx -t and reloads. If the test fails, the previous file content is
+// restored (or the new file removed) so DSM's nginx is never left with a
+// config it cannot load.
+func (s *server) installConf(confFile, conf string) {
+	previous, readErr := os.ReadFile(confFile)
+	if readErr == nil && string(previous) == conf {
 		return // already up to date
 	}
-
-	_ = os.WriteFile(confFile, []byte(conf), 0o644)
-	if s.testNginx() == nil {
-		_ = s.reloadNginx()
+	if err := os.WriteFile(confFile, []byte(conf), 0o644); err != nil {
+		return // nothing new on disk, so nothing to test or reload
 	}
+	if s.testNginx() != nil {
+		if readErr == nil {
+			_ = os.WriteFile(confFile, previous, 0o644)
+		} else {
+			_ = os.Remove(confFile)
+		}
+		return
+	}
+	_ = s.reloadNginx()
 }

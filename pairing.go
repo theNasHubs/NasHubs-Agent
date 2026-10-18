@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,11 +38,6 @@ type pairResponse struct {
 //
 // The request is already signature-authenticated by middleware.
 func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
-	if !s.pairLimiter.allow(clientIP(r)) {
-		writeJSON(w, http.StatusTooManyRequests, errMap("too many pairing attempts", nil))
-		return
-	}
-
 	auth := authFrom(r)
 	var req pairRequest
 	if err := decodeBody(r, &req); err != nil {
@@ -50,7 +46,7 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Single critical section so concurrent retries from the same device don't
-	// race on the one-time flag or double-enroll.
+	// double-enroll.
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
 
@@ -62,27 +58,34 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	// New key → must present the one-time secret within the window.
-	if s.cfg.PairingSecret == "" {
-		writeJSON(w, http.StatusForbidden, errMap("no pairing secret configured", nil))
+	// A reconnect with a verified enrolled key does not guess a secret. Keep
+	// bootstrap throttling for new keys; the general request limiter still
+	// protects enrolled clients without locking out normal screen navigation.
+	if !s.pairLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, errMap("too many pairing attempts", nil))
 		return
 	}
-	if s.pairingConsumed {
-		writeJSON(w, http.StatusForbidden, errMap("pairing already completed", nil))
+
+	// New key → must present the pairing secret within the window. Only keys trusted at bootstrap
+	// (env) reach this handler at all, and each enrols once; every other request from an env key
+	// is refused until it has paired (see verifyRequest), so a second bootstrap key (another
+	// device of the same owner) can still pair within the window.
+	if s.cfg.PairingSecret == "" {
+		writeJSON(w, http.StatusForbidden, errMap("no pairing secret configured", nil))
 		return
 	}
 	if time.Since(s.startedAt) > pairingTTL {
 		writeJSON(w, http.StatusForbidden, errMap("pairing window expired", nil))
 		return
 	}
-	if req.PairingSecret != s.cfg.PairingSecret {
+	if subtle.ConstantTimeCompare([]byte(req.PairingSecret), []byte(s.cfg.PairingSecret)) != 1 {
 		writeJSON(w, http.StatusForbidden, errMap("pairing secret mismatch", nil))
 		return
 	}
-	// Persist consumption across restarts without storing the bootstrap secret.
-	// A disk failure fails closed; root can issue a fresh invitation instead.
-	marker := filepath.Join(s.cfg.DataDir, ".bootstrap-"+invitationHash(s.cfg.PairingSecret)+".used")
+
+	// Legacy bootstrap consumption is durable per env-trusted key, preserving
+	// upstream's multiple-bootstrap-device behavior without accepting a lost store.
+	marker := filepath.Join(s.cfg.DataDir, ".bootstrap-"+invitationHash(s.cfg.PairingSecret+"\n"+auth.keyID)+".used")
 	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -112,7 +115,6 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errMap("enroll device", err))
 		return
 	}
-	s.pairingConsumed = true
 
 	writeJSON(w, http.StatusOK, pairResponse{
 		OK: true, CertFingerprint: s.certFingerprint, Version: s.cfg.Version,

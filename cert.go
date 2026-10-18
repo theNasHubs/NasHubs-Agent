@@ -27,18 +27,22 @@ func ensureCert(dataDir string) (tls.Certificate, string, error) {
 	certPath := filepath.Join(dataDir, "agent.crt")
 	keyPath := filepath.Join(dataDir, "agent.key")
 
-	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	if !os.IsNotExist(certErr) || !os.IsNotExist(keyErr) {
+		// A cert already exists (or cannot even be checked). Never replace it
+		// silently: every paired app pins its fingerprint, so a new cert would
+		// lock all of them out. Fail loudly instead; deleting both files is the
+		// explicit way to regenerate.
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return tls.Certificate{}, "", fmt.Errorf("load %s/%s: %w (refusing to replace the pinned certificate; remove both files to generate a new one, then re-pair the apps)", certPath, keyPath, err)
+		}
 		fp, err := fingerprintOfFile(certPath)
-		if err == nil {
-			return cert, fp, nil
+		if err != nil {
+			return tls.Certificate{}, "", fmt.Errorf("fingerprint %s: %w", certPath, err)
 		}
-	}
-	// A missing/corrupt half of an existing identity must never silently rotate
-	// the pin for every enrolled iOS/Android device. Require explicit recovery.
-	for _, path := range []string{certPath, keyPath} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			return tls.Certificate{}, "", fmt.Errorf("existing TLS identity unavailable; restore certificate and key from backup")
-		}
+		return cert, fp, nil
 	}
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -49,11 +53,22 @@ func ensureCert(dataDir string) (tls.Certificate, string, error) {
 	if err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := writePEM(certPath, "CERTIFICATE", der); err != nil {
+	keyBytes, err := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
+	if err != nil {
 		return tls.Certificate{}, "", err
 	}
-	keyBytes, _ := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
-	if err := writePEM(keyPath, "EC PRIVATE KEY", keyBytes); err != nil {
+	// Write both to temp files first, then rename key and cert into place, so a
+	// crash never leaves a truncated file behind.
+	if err := writePEM(keyPath+".tmp", "EC PRIVATE KEY", keyBytes); err != nil {
+		return tls.Certificate{}, "", err
+	}
+	if err := writePEM(certPath+".tmp", "CERTIFICATE", der); err != nil {
+		return tls.Certificate{}, "", err
+	}
+	if err := os.Rename(keyPath+".tmp", keyPath); err != nil {
+		return tls.Certificate{}, "", err
+	}
+	if err := os.Rename(certPath+".tmp", certPath); err != nil {
 		return tls.Certificate{}, "", err
 	}
 
@@ -73,8 +88,8 @@ func generateSelfSigned() (tls.Certificate, []byte, error) {
 		Subject:      pkix.Name{CommonName: "nashubs-agent"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().AddDate(10, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		// No DNSNames/IPAddresses: the client pins this certificate by SHA-256
 		// fingerprint and skips hostname validation, so it works for any NAS address.
 	}
@@ -98,8 +113,15 @@ func writePEM(path, blockType string, der []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: blockType, Bytes: der})
+	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func fingerprintOfFile(certPath string) (string, error) {

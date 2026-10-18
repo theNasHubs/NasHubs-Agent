@@ -206,10 +206,28 @@ func TestReplayRejected(t *testing.T) {
 	defer ts.Close()
 	url := ts.URL + "/pair"
 	body, _ := json.Marshal(pairRequest{PairingSecret: "test-secret"})
-	first := signedRequest(t, client(), priv, "POST", url, body)
+	// Send the exact same signed request twice. (Calling signedRequest twice re-reads the clock,
+	// so the two requests could land in different seconds and not be a replay at all.)
+	ts0 := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := base64.StdEncoding.EncodeToString([]byte("replay-nonce"))
+	sum := sha256.Sum256(body)
+	sig := ed25519.Sign(priv, []byte("POST\n/pair\n"+ts0+"\n"+nonce+"\n"+hex.EncodeToString(sum[:])))
+	send := func() *http.Response {
+		req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+		req.Header.Set(hdrKeyID, base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)))
+		req.Header.Set(hdrTs, ts0)
+		req.Header.Set(hdrNonce, nonce)
+		req.Header.Set(hdrSig, base64.StdEncoding.EncodeToString(sig))
+		resp, err := client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	first := send()
 	_ = first.Body.Close()
 	// Same (ts,nonce) → nonce cache should reject.
-	second := signedRequest(t, client(), priv, "POST", url, body)
+	second := send()
 	if second.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replay status = %d, want 401", second.StatusCode)
 	}

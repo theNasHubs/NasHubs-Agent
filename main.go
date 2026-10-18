@@ -49,6 +49,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ensure cert: %v", err)
 	}
+	tightenDataFilePerms(cfg.DataDir)
 
 	s := &server{
 		cfg:             cfg,
@@ -60,6 +61,9 @@ func main() {
 		// Allow a handful of pairing attempts per client IP within the window
 		// (the app retries while the container boots).
 		pairLimiter: newRateLimiter(10, 5*time.Minute),
+		// Generous per-IP cap for all signed requests: normal polling is well
+		// under this; a flood is rejected before the body is read.
+		reqLimiter: newRateLimiter(240, 10*time.Second),
 	}
 	log.Printf("using compose: %v", s.composeArgs)
 	s.invitations = newInvitationStore(cfg.DataDir)
@@ -86,11 +90,14 @@ func main() {
 	log.Printf("nashubs-agent listening on https://0.0.0.0%s (TLS pinned by fingerprint)", addr)
 
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           s.routes(),
+		Addr:    addr,
+		Handler: s.routes(),
+		// Bound how long an unauthenticated client can hold a connection before the signature
+		// is even checked. No WriteTimeout: /logs?follow streams and /deploy waits on compose.
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,

@@ -241,14 +241,18 @@ func TestReplayCacheCapacityFailsClosed(t *testing.T) {
 }
 
 func TestCorruptDeviceStoreCannotFallBackToBootstrapTrust(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "devices.json"), []byte("corrupted"), 0600)
-	s, ts := enrollmentServer(t, dir)
-	k := freshKey(t)
-	s.cfg.TrustedPublicKeys[keyID(k)] = true
-	assertStatus(t, enrollRequest(t, ts, k, "/devices", nil), 401)
-	if _, err := s.devices.enroll(keyID(k), "owner", RoleOwner); err == nil {
-		t.Fatal("corrupt store overwritten")
+	for _, contents := range []string{"corrupted", "null", "[null]"} {
+		t.Run(contents, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "devices.json"), []byte(contents), 0600)
+			s, ts := enrollmentServer(t, dir)
+			k := freshKey(t)
+			s.cfg.TrustedPublicKeys[keyID(k)] = true
+			assertStatus(t, enrollRequest(t, ts, k, "/devices", nil), 401)
+			if _, err := s.devices.enroll(keyID(k), "owner", RoleOwner); err == nil {
+				t.Fatal("corrupt store overwritten")
+			}
+		})
 	}
 }
 
@@ -295,11 +299,15 @@ func TestBootstrapSecretConsumptionSurvivesRestart(t *testing.T) {
 	s.cfg.PairingSecret = "bootstrap-fixture"
 	assertStatus(t, enrollRequest(t, ts, k, "/pair", pairRequest{PairingSecret: "bootstrap-fixture"}), 200)
 	s2, ts2 := enrollmentServer(t, dir)
-	next := freshKey(t)
-	s2.cfg.TrustedPublicKeys[keyID(next)] = true
+	s2.cfg.TrustedPublicKeys[keyID(k)] = true
 	s2.cfg.PairingSecret = "bootstrap-fixture"
-	assertStatus(t, enrollRequest(t, ts2, next, "/pair", pairRequest{PairingSecret: "bootstrap-fixture"}), 403)
 	assertStatus(t, enrollRequest(t, ts2, k, "/pair", pairRequest{}), 200)
+	// Explicitly removing the store must not reuse the consumed bootstrap for the same key.
+	os.Remove(filepath.Join(dir, "devices.json"))
+	s3, ts3 := enrollmentServer(t, dir)
+	s3.cfg.TrustedPublicKeys[keyID(k)] = true
+	s3.cfg.PairingSecret = "bootstrap-fixture"
+	assertStatus(t, enrollRequest(t, ts3, k, "/pair", pairRequest{PairingSecret: "bootstrap-fixture"}), 403)
 }
 
 func TestExistingTLSIdentityNeverRotatesSilently(t *testing.T) {
@@ -320,5 +328,15 @@ func TestExistingTLSIdentityNeverRotatesSilently(t *testing.T) {
 	after, _ := os.ReadFile(filepath.Join(dir, "agent.crt"))
 	if !bytes.Equal(before, after) {
 		t.Fatal("certificate overwritten")
+	}
+}
+
+func TestEnrolledReconnectDoesNotConsumeBootstrapAttemptBudget(t *testing.T) {
+	s, ts := enrollmentServer(t, t.TempDir())
+	k := freshKey(t)
+	s.devices.enroll(keyID(k), "owner", RoleOwner)
+	s.pairLimiter = newRateLimiter(1, time.Minute)
+	for i := 0; i < 15; i++ {
+		assertStatus(t, enrollRequest(t, ts, k, "/pair", pairRequest{}), 200)
 	}
 }

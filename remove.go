@@ -13,7 +13,7 @@ import (
 // the project state directory to mark it as uninstalled.
 func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/remove/")
-	if !idSafe.MatchString(id) {
+	if !validAppID(id) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
 		return
 	}

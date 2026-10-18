@@ -44,7 +44,7 @@ Unix socket (`<data-dir>/control.sock`, mode 0600); it does not rewrite a runnin
 Agent's store or retain a permanent recovery token. Keep the output private.
 
 Initial legacy bootstrap using an env-trusted public key and pairing secret
-still works. Its consumption is also persisted across restarts. Updating an
+still works. Its consumption is persisted per trusted key across restarts, preserving multiple legacy bootstrap devices. Updating an
 old Agent to this protocol is a separate one-time maintenance operation.
 
 ## Discovery and NAS resources

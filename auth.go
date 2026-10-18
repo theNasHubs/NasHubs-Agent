@@ -27,10 +27,12 @@ const (
 	hdrNonce = "X-NasHubs-Nonce"
 	hdrSig   = "X-NasHubs-Sig"
 
-	maxSkew   = 60 * time.Second
-	nonceTTL  = 2 * time.Minute
-	maxNonces = 50_000 // hard cap to prevent unbounded memory growth under burst
+	maxSkew  = 60 * time.Second
+	nonceTTL = 2 * time.Minute
 )
+
+// maxNonces is the hard cap on the replay cache (var so tests can shrink it).
+var maxNonces = 50_000
 
 // nonceCache prevents replay of previously seen (ts,nonce) pairs.
 type nonceCache struct {
@@ -52,9 +54,20 @@ func (n *nonceCache) checkAndAdd(key string, now time.Time) bool {
 			delete(n.seen, k)
 		}
 	}
-	// Fail closed at capacity: never discard live replay protection.
+	// Hard cap without opening a replay window. A nonce older than maxSkew can
+	// never be replayed (verifyRequest rejects its timestamp), so those are safe
+	// to forget first. If the cache is STILL full, every remaining nonce is
+	// within the replay window — fail closed (reject the new request) rather
+	// than evict one and let it be replayed.
 	if len(n.seen) >= maxNonces {
-		return false
+		for k, tSeen := range n.seen {
+			if now.Sub(tSeen) > maxSkew {
+				delete(n.seen, k)
+			}
+		}
+		if len(n.seen) >= maxNonces {
+			return false
+		}
 	}
 	if _, ok := n.seen[key]; ok {
 		return false
@@ -73,18 +86,14 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	return s.verifySignature(r, body, true)
 }
 
-// Only enrollment may prove possession without prior trust. It still requires
-// a one-use owner invitation; this does not authorize any other route.
+// Enrollment proves possession of a new key; only an owner invitation can authorize it.
 func (s *server) verifySignature(r *http.Request, body []byte, requireTrusted bool) (authResult, error) {
-	if s.devices.loadErr != nil {
+	if s.devices == nil || s.devices.loadErr != nil {
 		return authResult{}, fmt.Errorf("device store unavailable")
 	}
-	keyID := r.Header.Get(hdrKeyID)
-	tsStr := r.Header.Get(hdrTs)
-	nonce := r.Header.Get(hdrNonce)
-	sigB64 := r.Header.Get(hdrSig)
-	if keyID == "" || tsStr == "" || nonce == "" || sigB64 == "" {
-		return authResult{}, fmt.Errorf("missing signature headers")
+	keyID, tsStr, nonce, sigB64, err := signatureHeaders(r.Header)
+	if err != nil {
+		return authResult{}, err
 	}
 
 	// 1) timestamp freshness
@@ -132,17 +141,44 @@ func (s *server) verifySignature(r *http.Request, body []byte, requireTrusted bo
 		return authResult{}, fmt.Errorf("replay detected")
 	}
 
-	// 5) resolve role. An enrolled device uses its stored role; an env-trusted
-	// key that has not enrolled yet is treated as owner (the bootstrap device).
-	role := RoleOwner
-	if !requireTrusted {
-		role = ""
-	}
+	// 5) resolve role. Only an enrolled device has a role. An env-trusted key that has not
+	// paired yet gets none: it can call /pair (requireAuth only) and nothing else, so a key
+	// injected at bootstrap must enrol — and becomes visible and revocable — before it can act.
+	role := Role("")
 	if dev != nil {
 		role = dev.Role
 	}
 	s.devices.touch(keyID)
 	return authResult{keyID: keyID, role: role}, nil
+}
+
+// Header names used by the pre-rebrand ("Nasdeck") iOS app that is still in production. The
+// signature scheme and canonical string are identical; only the header prefix differs.
+const (
+	legacyHdrKeyID = "X-Nasdeck-Keyid"
+	legacyHdrTs    = "X-Nasdeck-Ts"
+	legacyHdrNonce = "X-Nasdeck-Nonce"
+	legacyHdrSig   = "X-Nasdeck-Sig"
+)
+
+// signatureHeaders returns the four signature headers from exactly ONE scheme: the current
+// X-NasHubs-* set or the legacy X-Nasdeck-* set. A request carrying headers of both schemes is
+// rejected as ambiguous, so fields can never be mixed across schemes (header confusion).
+func signatureHeaders(h http.Header) (keyID, ts, nonce, sig string, err error) {
+	current := h.Get(hdrKeyID) != "" || h.Get(hdrTs) != "" || h.Get(hdrNonce) != "" || h.Get(hdrSig) != ""
+	legacy := h.Get(legacyHdrKeyID) != "" || h.Get(legacyHdrTs) != "" || h.Get(legacyHdrNonce) != "" || h.Get(legacyHdrSig) != ""
+	switch {
+	case current && legacy:
+		return "", "", "", "", fmt.Errorf("ambiguous signature headers")
+	case legacy:
+		keyID, ts, nonce, sig = h.Get(legacyHdrKeyID), h.Get(legacyHdrTs), h.Get(legacyHdrNonce), h.Get(legacyHdrSig)
+	default:
+		keyID, ts, nonce, sig = h.Get(hdrKeyID), h.Get(hdrTs), h.Get(hdrNonce), h.Get(hdrSig)
+	}
+	if keyID == "" || ts == "" || nonce == "" || sig == "" {
+		return "", "", "", "", fmt.Errorf("missing signature headers")
+	}
+	return keyID, ts, nonce, sig, nil
 }
 
 // signatureBase builds the canonical message that is signed/verified.

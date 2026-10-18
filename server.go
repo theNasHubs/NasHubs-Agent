@@ -14,6 +14,7 @@ import (
 )
 
 type server struct {
+	invitations     *invitationStore
 	cfg             Config
 	nonces          *nonceCache
 	certFingerprint string
@@ -22,10 +23,9 @@ type server struct {
 	devices     *deviceStore
 	startedAt   time.Time    // for the pairing TTL window
 	pairLimiter *rateLimiter // throttles /pair attempts per client IP
+	reqLimiter  *rateLimiter // throttles ALL signed requests per client IP (DoS guard)
 
-	pairMu          sync.Mutex // guards pairingConsumed + the enroll decision
-	pairingConsumed bool       // one-time pairing secret already used
-	invitations     *invitationStore
+	pairMu sync.Mutex // serialises the enroll decision
 }
 
 // detectCompose picks the compose invocation available on the host. DSM 7.0's
@@ -64,7 +64,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /proxies", s.requireAuth(s.requireRole(RoleViewer, s.handleListProxies)))
 	mux.HandleFunc("GET /state", s.requireAuth(s.requireRole(RoleViewer, s.handleState)))
 	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleViewer, s.handleRemoteStatus)))
-	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleViewer, s.handleGetCloudflare)))
+	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleGetCloudflare)))
 	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
 	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleViewer, s.handleListVolumes)))
 	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleViewer, s.handleResources)))
@@ -89,6 +89,10 @@ func (s *server) routes() http.Handler {
 func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role := authFrom(r).role
+		if role == "" {
+			writeJSON(w, http.StatusForbidden, errMap("device not paired", nil))
+			return
+		}
 		ok := false
 		switch min {
 		case RoleViewer:
@@ -107,8 +111,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version,
-		"agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1"}})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1"}})
 }
 
 // requireAuth reads the full request body (needed for the signature's body hash),
@@ -116,6 +119,13 @@ func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
 // handler with the body restored and the auth result in context.
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Per-IP rate limit before doing any work (body read, hashing, verify),
+		// so an unauthenticated flood is cheap to reject. Generous enough for
+		// normal polling of /state, /health and /logs.
+		if s.reqLimiter != nil && !s.reqLimiter.allow(clientIP(r)) {
+			writeJSON(w, http.StatusTooManyRequests, errMap("rate limit exceeded", nil))
+			return
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20)) // 4 MiB cap
 		_ = r.Body.Close()
 		if err != nil {

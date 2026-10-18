@@ -21,12 +21,27 @@ import (
 // idSafe enforces a strict id charset to prevent path traversal / injection.
 var idSafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// reservedAppIDs are ids whose "nashubs-<id>" container name belongs to the agent itself.
+// Deploying or removing them would `docker rm -f nashubs-agent` mid-request, and since the
+// container is removed (not stopped) its restart policy never brings it back.
+var reservedAppIDs = map[string]bool{"agent": true}
+
+// agentContainerName is the agent's own container. No deploy may ever name a
+// service this, nor rm it, or the deploy would kill the control plane.
+const agentContainerName = "nashubs-agent"
+
+// validAppID reports whether id may be deployed, removed or rolled back.
+func validAppID(id string) bool {
+	return idSafe.MatchString(id) && !reservedAppIDs[id]
+}
+
 type deployRequest struct {
 	ID           string `json:"id"`
 	Compose      string `json:"compose"`      // rendered docker-compose.yml
 	Version      string `json:"version"`      // optional label; actual artifact = sha256(compose)[:12]
 	InternalPort int    `json:"internalPort"` // if > 0, auto-create reverse proxy after deploy
 	PathPrefix   string `json:"pathPrefix"`   // URL prefix for reverse proxy (default: /{id})
+	Pull         bool   `json:"pull"`         // if true, `compose pull` before `up` to fetch newer images
 }
 
 type deployResponse struct {
@@ -45,9 +60,27 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad request", err))
 		return
 	}
-	if !idSafe.MatchString(req.ID) || req.Compose == "" {
+	if !validAppID(req.ID) || req.Compose == "" {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
 		return
+	}
+	// No service may claim the agent's own container name (any role): a later
+	// rm of it would remove the control plane mid-request.
+	for _, name := range composeContainerNames([]byte(req.Compose)) {
+		if name == agentContainerName {
+			writeJSON(w, http.StatusBadRequest, errMap("container_name "+agentContainerName+" is reserved", nil))
+			return
+		}
+	}
+	if req.InternalPort != 0 {
+		prefix := req.PathPrefix
+		if prefix == "" {
+			prefix = "/" + req.ID
+		}
+		if !validAppProxy(prefix, req.InternalPort) {
+			writeJSON(w, http.StatusBadRequest, errMap("invalid internalPort or pathPrefix", nil))
+			return
+		}
 	}
 
 	sum := sha256.Sum256([]byte(req.Compose))
@@ -56,12 +89,19 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// Container path (writable mount) and the matching host path the daemon sees.
 	dir := filepath.Join(s.cfg.DataDir, req.ID, version)
 	hostDir := filepath.Join(s.cfg.HostDataDir, req.ID, version)
+	if authFrom(r).role != RoleOwner {
+		pol := composePolicy{appID: req.ID, dataDir: s.cfg.DataDir, hostDataDir: s.cfg.HostDataDir, projectDir: dir}
+		if err := pol.check([]byte(req.Compose)); err != nil {
+			writeJSON(w, http.StatusForbidden, errMap("compose option requires the owner role", err))
+			return
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("mkdir", err))
 		return
 	}
 	composeFile := filepath.Join(dir, "docker-compose.yml")
-	if err := os.WriteFile(composeFile, []byte(req.Compose), 0o644); err != nil {
+	if err := writePrivateFile(composeFile, []byte(req.Compose)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("write compose", err))
 		return
 	}
@@ -72,12 +112,30 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// exist". Pre-create them (agent runs as root; harmless if already present).
 	ensureBindMountDirs([]byte(req.Compose))
 
-	// Forcefully remove any existing container with the exact target name.
-	// This prevents "Conflict" errors when migrating from the old agent (which
-	// used random project names) to the new agent (which uses explicit `-p req.ID`).
+	// Forcefully remove any existing container that would collide with this
+	// deploy: the project's own name, plus every container_name declared in the
+	// compose. An app installed by the old agent keeps the same container_name
+	// (templates are shared), so this clears the "Conflict" (422) on redeploy
+	// without scanning for or touching any other container or volume.
 	_ = exec.Command("docker", "rm", "-f", "nashubs-"+req.ID).Run()
+	for _, name := range composeContainerNames([]byte(req.Compose)) {
+		if name != "nashubs-"+req.ID && name != agentContainerName {
+			_ = exec.Command("docker", "rm", "-f", name).Run()
+		}
+	}
 
-	out, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
+	out := ""
+	if req.Pull {
+		// Typed image refresh (replaces the removed generic /exec): pull newer
+		// images for this project before recreating. A pull failure is not fatal.
+		pullOut, pullErr := s.runCompose(hostCompose, req.ID, "pull")
+		out += pullOut
+		if pullErr != nil {
+			out += fmt.Sprintf("\n[warn] compose pull: %v", pullErr)
+		}
+	}
+	upOut, runErr := s.runCompose(hostCompose, req.ID, "up", "-d")
+	out += upOut
 
 	// Record current version so /logs /health /rollback can resolve it.
 	st := deployState{
@@ -104,7 +162,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-create reverse proxy if deploy succeeded and port is specified
-	if runErr == nil && req.InternalPort > 0 {
+	if runErr == nil && req.InternalPort > 0 && s.nginxEnabled() {
 		prefix := req.PathPrefix
 		if prefix == "" {
 			prefix = "/" + req.ID
@@ -144,7 +202,7 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(composeEnv(os.Environ()),
 		"COMPOSE_COMPATIBILITY=true",
 		// Synology keeps docker/compose under these paths; harmless elsewhere.
 		"PATH="+os.Getenv("PATH")+":/var/packages/ContainerManager/target/usr/bin:/var/packages/Docker/target/usr/bin:/usr/local/bin",
@@ -154,6 +212,52 @@ func (s *server) runCompose(hostCompose string, projectName string, args ...stri
 	cmd.Stderr = &combined
 	err := cmd.Run()
 	return combined.String(), err
+}
+
+// composeEnvAllowed lists the only variables of the agent's environment that
+// the compose CLI receives. Compose interpolates ${VAR} from its environment,
+// so anything else (pairing secret, trusted keys, tokens, future settings)
+// could be copied into a deployed container. Templates are filled in by the
+// app before deploy and the agent writes no .env file, so nothing needs more.
+var composeEnvAllowed = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "TZ": true, "LANG": true, "LC_ALL": true,
+	"DOCKER_HOST": true, "DOCKER_CONFIG": true, "DOCKER_CONTEXT": true,
+	"DOCKER_CERT_PATH": true, "DOCKER_TLS_VERIFY": true, "DOCKER_API_VERSION": true,
+}
+
+// composeEnv returns the allowlisted subset of environ.
+func composeEnv(environ []string) []string {
+	out := make([]string, 0, len(composeEnvAllowed))
+	for _, kv := range environ {
+		if k, _, _ := strings.Cut(kv, "="); composeEnvAllowed[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// dockerNameRe is Docker's own container-name grammar. A name that does not
+// match (e.g. one starting with "-") is skipped rather than passed to rm.
+var dockerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+// composeContainerNames returns the explicit container_name of each service.
+// Used to clear name conflicts on redeploy (incl. apps from the old agent).
+func composeContainerNames(compose []byte) []string {
+	var doc struct {
+		Services map[string]struct {
+			ContainerName string `yaml:"container_name"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &doc); err != nil {
+		return nil
+	}
+	var names []string
+	for _, svc := range doc.Services {
+		if n := svc.ContainerName; n != "" && dockerNameRe.MatchString(n) {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 // ensureBindMountDirs parses the compose for service volume bind mounts and
@@ -234,7 +338,7 @@ func saveState(dataDir, id string, st deployState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(dataDir, id), b, 0o644)
+	return writePrivateFile(statePath(dataDir, id), b)
 }
 
 func loadState(dataDir, id string) (deployState, error) {

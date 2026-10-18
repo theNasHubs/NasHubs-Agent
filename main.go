@@ -43,6 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ensure cert: %v", err)
 	}
+	tightenDataFilePerms(cfg.DataDir)
 
 	s := &server{
 		cfg:             cfg,

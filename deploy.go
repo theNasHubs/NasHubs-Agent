@@ -81,7 +81,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	composeFile := filepath.Join(dir, "docker-compose.yml")
-	if err := os.WriteFile(composeFile, []byte(req.Compose), 0o644); err != nil {
+	if err := writePrivateFile(composeFile, []byte(req.Compose)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errMap("write compose", err))
 		return
 	}
@@ -254,7 +254,7 @@ func saveState(dataDir, id string, st deployState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(dataDir, id), b, 0o644)
+	return writePrivateFile(statePath(dataDir, id), b)
 }
 
 func loadState(dataDir, id string) (deployState, error) {

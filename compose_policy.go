@@ -44,7 +44,7 @@ var (
 		"stop_grace_period": true, "tty": true, "stdin_open": true, "init": true,
 		"tmpfs": true, "deploy": true, "platform": true, "pull_policy": true,
 		"read_only": true, "group_add": true, "container_name": true, "gpus": true,
-		"cap_drop": true, "pids_limit": true, "links": true, "profiles": true,
+		"cap_add": true, "cap_drop": true, "pids_limit": true, "links": true, "profiles": true,
 		"mac_address": true, "oom_score_adj": true, "annotations": true,
 	}
 	versionDirName = regexp.MustCompile(`^v[0-9a-f]{12}$`)
@@ -91,9 +91,19 @@ func (p composePolicy) checkService(svc map[string]any) error {
 		}
 	}
 	if v, ok := svc["network_mode"]; ok {
+		// host networking is allowed (tailscale/cloudflared/pihole need it; it is
+		// networking, not a path into the host). container: is still rejected
+		// (would join the agent's own namespace), as is ${} interpolation.
 		s, isString := v.(string)
-		if !isString || strings.Contains(s, "$") || strings.HasPrefix(s, "host") || strings.HasPrefix(s, "container:") {
+		if !isString || strings.Contains(s, "$") || strings.HasPrefix(s, "container:") {
 			return fmt.Errorf("network_mode %v is not allowed", v)
+		}
+	}
+	if v, ok := svc["cap_add"]; ok {
+		for _, c := range asList(v) {
+			if !allowedCap(c) {
+				return fmt.Errorf("capability %v is not allowed (only NET_ADMIN, NET_RAW)", c)
+			}
 		}
 	}
 	if v, ok := svc["devices"]; ok {
@@ -127,14 +137,15 @@ func (p composePolicy) checkVolume(vol any) error {
 		if strings.Contains(v, "$") {
 			return fmt.Errorf("volume %q: variable interpolation is not allowed", v)
 		}
-		src, _, found := strings.Cut(v, ":")
-		if !found {
+		fields := strings.Split(v, ":")
+		src := fields[0]
+		if len(fields) == 1 {
 			return nil // anonymous volume
 		}
 		if !strings.HasPrefix(src, "/") && !strings.HasPrefix(src, ".") && !strings.HasPrefix(src, "~") {
 			return nil // named volume
 		}
-		return p.checkBindSource(src)
+		return p.checkBindSource(src, volumeIsRO(fields[2:]))
 	case map[string]any:
 		typ, _ := v["type"].(string)
 		src, _ := v["source"].(string)
@@ -148,11 +159,27 @@ func (p composePolicy) checkVolume(vol any) error {
 			if strings.Contains(src, "$") {
 				return fmt.Errorf("volume %q: variable interpolation is not allowed", src)
 			}
-			return p.checkBindSource(src)
+			ro, _ := v["read_only"].(bool)
+			return p.checkBindSource(src, ro)
 		}
 	}
 	return fmt.Errorf("volume %v is not allowed", vol)
 }
+
+// volumeIsRO reports whether the short-syntax mount options contain the ro flag.
+func volumeIsRO(opts []string) bool {
+	for _, o := range opts {
+		for _, part := range strings.Split(o, ",") {
+			if part == "ro" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// exactBindRO are host files a non-owner may bind READ-ONLY (timezone data).
+var exactBindRO = map[string]bool{"/etc/localtime": true, "/etc/timezone": true}
 
 // checkBindSource allows:
 //   - a relative path inside the project directory (not the directory itself,
@@ -163,7 +190,17 @@ func (p composePolicy) checkVolume(vol any) error {
 //
 // Symlinks along a path the agent can see are rejected, because the daemon
 // resolves them on the host when it creates the mount.
-func (p composePolicy) checkBindSource(src string) error {
+func (p composePolicy) checkBindSource(src string, readOnly bool) error {
+	// Narrow host-path exceptions needed by stock templates.
+	if exactBindRO[src] {
+		if !readOnly {
+			return fmt.Errorf("bind mount %q must be read-only (:ro)", src)
+		}
+		return nil
+	}
+	if src == "/dev/net/tun" { // the VPN tun device; needs NET_ADMIN too
+		return nil
+	}
 	bad := func(why string) error { return fmt.Errorf("bind mount %q: %s", src, why) }
 	if strings.HasPrefix(src, "~") {
 		return bad("home directory paths are not allowed")
@@ -242,6 +279,13 @@ func checkTopLevelResources(kind string, v any) error {
 			switch k {
 			case "labels", "attachable", "internal", "enable_ipv6", "ipam":
 				continue
+			case "name":
+				// A plain volume/network name (e.g. nashubs-cf-creds) is allowed, but
+				// not driver_opts/external/driver, which could bind a host path or
+				// attach to an existing privileged resource.
+				if _, isStr := val.(string); isStr {
+					continue
+				}
 			case "driver":
 				if val == "local" || val == "bridge" {
 					continue
@@ -253,6 +297,19 @@ func checkTopLevelResources(kind string, v any) error {
 		}
 	}
 	return nil
+}
+
+// allowedCap reports whether a cap_add entry is one of the narrow networking
+// capabilities VPN/DNS apps need. Everything else (SYS_ADMIN, SYS_MODULE,
+// SYS_PTRACE, ALL, ...) is rejected: those grant host compromise.
+func allowedCap(c any) bool {
+	s, ok := c.(string)
+	if !ok {
+		return false
+	}
+	s = strings.ToUpper(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "CAP_")
+	return s == "NET_ADMIN" || s == "NET_RAW"
 }
 
 func allowedDevice(src string) bool {

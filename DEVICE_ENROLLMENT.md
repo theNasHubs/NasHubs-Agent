@@ -76,3 +76,13 @@ Run `go vet ./...` and `go test -race -count=1 ./...` on Linux. Tests cover
 legacy signing/reconnect, persistent one-use invitations, concurrent redemption,
 roles, revocation, corrupt storage, disk failure, root socket permissions, host
 resources, and stable TLS identity. CI tests PRs without publishing images.
+
+## Isolated preview image
+
+Pushes to `codex/live-device-enrollment` run the pinned publish workflow after
+Go vet and race tests pass. The multi-architecture image is published to
+`ghcr.io/thenashubs/nashubs-agent:sha-<full commit SHA>`. The shared `latest`
+tag is emitted only on the default branch. Android's preview installer selects
+an exact commit tag rather than silently upgrading existing installations.
+Publishing source to Git does not itself publish a Docker image; the workflow
+and an anonymous registry manifest check must both succeed before installation.

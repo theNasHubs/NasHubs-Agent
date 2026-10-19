@@ -26,7 +26,7 @@ var fixedSeed = func() []byte {
 func TestSignatureBaseFormat(t *testing.T) {
 	// Canonical sigBase: METHOD\nPATH\nTS\nNONCE\nHEX(sha256(body))
 	body := []byte(`{"id":"qbittorrent"}`)
-	base := signatureBase("POST", "/deploy", "1700000000", "nonceABC=", body)
+	base := signatureBase("POST", "/deploy", "1700000000", "nonceABC=", "", body)
 
 	sum := sha256.Sum256(body)
 	want := "POST\n/deploy\n1700000000\nnonceABC=\n" + hex.EncodeToString(sum[:])
@@ -67,7 +67,7 @@ func TestRequestSigningRoundTrip(t *testing.T) {
 
 	ts := "1700000123"
 	nonce := base64.StdEncoding.EncodeToString([]byte("nonce1234567890"))
-	base := signatureBase("POST", "/deploy", ts, nonce, body)
+	base := signatureBase("POST", "/deploy", ts, nonce, "", body)
 	sig := ed25519.Sign(priv, base)
 
 	if !ed25519.Verify(pub, base, sig) {
@@ -75,7 +75,7 @@ func TestRequestSigningRoundTrip(t *testing.T) {
 	}
 
 	// Sanity: a tampered body must fail verification.
-	bad := signatureBase("POST", "/deploy", ts, nonce, []byte(`{"compose":"y"}`))
+	bad := signatureBase("POST", "/deploy", ts, nonce, "", []byte(`{"compose":"y"}`))
 	if ed25519.Verify(pub, bad, sig) {
 		t.Fatal("verify should fail for tampered body")
 	}

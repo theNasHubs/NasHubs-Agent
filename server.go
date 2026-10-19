@@ -137,10 +137,19 @@ func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
 // handler with the body restored and the auth result in context.
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Per-IP rate limit before doing any work (body read, hashing, verify),
-		// so an unauthenticated flood is cheap to reject. Generous enough for
-		// normal polling of /state, /health and /logs.
-		if s.reqLimiter != nil && !s.reqLimiter.allow(clientIP(r)) {
+		// Rate limit before doing any work (body read, hashing, verify) so an
+		// unauthenticated flood is cheap to reject. Keyed by the signing keyId
+		// when present: behind nginx every request arrives from 127.0.0.1, so a
+		// per-IP bucket would let one flood throttle ALL users (shared fate).
+		// Rotating fake keyIds lands in the bounded overflow bucket instead.
+		key := r.Header.Get(hdrKeyID)
+		if key == "" {
+			key = r.Header.Get(legacyHdrKeyID)
+		}
+		if key == "" {
+			key = clientIP(r)
+		}
+		if s.reqLimiter != nil && !s.reqLimiter.allow(key) {
 			writeJSON(w, http.StatusTooManyRequests, errMap("rate limit exceeded", nil))
 			return
 		}

@@ -201,6 +201,76 @@ func TestBadSignatureDoesNotBurnNonce(t *testing.T) {
 	}
 }
 
+// TestAudienceBinding covers #34: a request carrying X-NasHubs-Aud binds to this
+// agent's fingerprint — a wrong aud is rejected even with a valid signature,
+// and the aud is inside the signed base so it can't be stripped. Requests
+// without the header keep working (transition for pre-audience clients).
+func TestAudienceBinding(t *testing.T) {
+	ts, priv, fp := newTestServer(t)
+	defer ts.Close()
+	c := client()
+
+	sign := func(url, aud string, body []byte) *http.Response {
+		t0 := strconv.FormatInt(time.Now().Unix(), 10)
+		nonce := base64.StdEncoding.EncodeToString([]byte("aud-" + aud + url))
+		sum := sha256.Sum256(body)
+		base := "GET\n/state\n" + t0 + "\n" + nonce + "\n" + hex.EncodeToString(sum[:])
+		if aud != "" {
+			base += "\n" + aud
+		}
+		req, _ := http.NewRequest("GET", url, bytes.NewReader(body))
+		req.Header.Set(hdrKeyID, base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)))
+		req.Header.Set(hdrTs, t0)
+		req.Header.Set(hdrNonce, nonce)
+		req.Header.Set(hdrSig, base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(base))))
+		if aud != "" {
+			req.Header.Set(hdrAud, aud)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Enrol so the device has a role.
+	body, _ := json.Marshal(pairRequest{PairingSecret: "test-secret"})
+	resp := signedRequest(t, c, priv, "POST", ts.URL+"/pair", body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("pair = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if r := sign(ts.URL+"/state", fp, nil); r.StatusCode != 200 {
+		t.Fatalf("correct aud = %d, want 200", r.StatusCode)
+	}
+	if r := sign(ts.URL+"/state", "deadbeef", nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong aud = %d, want 401", r.StatusCode)
+	}
+	// Signature without aud in base, but header present → invalid signature.
+	t0 := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := base64.StdEncoding.EncodeToString([]byte("aud-strip"))
+	sum := sha256.Sum256(nil)
+	base := "GET\n/state\n" + t0 + "\n" + nonce + "\n" + hex.EncodeToString(sum[:])
+	req, _ := http.NewRequest("GET", ts.URL+"/state", nil)
+	req.Header.Set(hdrKeyID, base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)))
+	req.Header.Set(hdrTs, t0)
+	req.Header.Set(hdrNonce, nonce)
+	req.Header.Set(hdrSig, base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(base))))
+	req.Header.Set(hdrAud, fp)
+	r, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stripped-aud sig = %d, want 401", r.StatusCode)
+	}
+	// Legacy request without aud still verifies.
+	if r := sign(ts.URL+"/state", "", nil); r.StatusCode != 200 {
+		t.Fatalf("no aud = %d, want 200", r.StatusCode)
+	}
+}
+
 func TestReplayRejected(t *testing.T) {
 	ts, priv, _ := newTestServer(t)
 	defer ts.Close()

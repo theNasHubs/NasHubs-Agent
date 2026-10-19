@@ -87,6 +87,9 @@ func main() {
 	}
 
 	addr := ":" + cfg.Port
+	// Public certificate identity is readable through authenticated DSM container logs.
+	// Never log the pairing secret or any private key.
+	log.Printf("nashubs-agent TLS SHA-256: %s", fp)
 	log.Printf("nashubs-agent listening on https://0.0.0.0%s (TLS pinned by fingerprint)", addr)
 
 	srv := &http.Server{

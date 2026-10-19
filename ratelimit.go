@@ -27,6 +27,16 @@ func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	cutoff := now.Add(-rl.window)
+	if len(rl.hits) >= 2048 {
+		for k, times := range rl.hits {
+			if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+				delete(rl.hits, k)
+			}
+		}
+		if _, exists := rl.hits[key]; !exists && len(rl.hits) >= 2048 {
+			return false
+		}
+	}
 	kept := rl.hits[key][:0]
 	for _, t := range rl.hits[key] {
 		if t.After(cutoff) {

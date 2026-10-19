@@ -14,6 +14,7 @@ import (
 )
 
 type server struct {
+	invitations     *invitationStore
 	cfg             Config
 	nonces          *nonceCache
 	certFingerprint string
@@ -24,7 +25,7 @@ type server struct {
 	pairLimiter *rateLimiter // throttles /pair attempts per client IP
 	reqLimiter  *rateLimiter // throttles ALL signed requests per client IP (DoS guard)
 
-	pairMu          sync.Mutex // serialises the enroll decision
+	pairMu sync.Mutex // serialises the enroll decision
 }
 
 // detectCompose picks the compose invocation available on the host. DSM 7.0's
@@ -45,12 +46,17 @@ type contextKey string
 const authKey contextKey = "auth"
 
 func (s *server) routes() http.Handler {
+	if s.invitations == nil {
+		s.invitations = newInvitationStore(s.cfg.DataDir)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ping", s.handlePing)
 
 	// Pairing: authenticated, but role is resolved inside the handler (a not-yet
 	// enrolled but env-trusted key must be able to enroll itself).
 	mux.HandleFunc("POST /pair", s.requireAuth(s.handlePair))
+	mux.HandleFunc("POST /devices/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /devices/invitations", s.requireAuth(s.requireRole(RoleOwner, s.handleCreateInvitation)))
 
 	// Read-only routes (viewer and above).
 	mux.HandleFunc("GET /logs/", s.requireAuth(s.requireRole(RoleViewer, s.handleLogs)))
@@ -61,6 +67,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleGetCloudflare)))
 	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
 	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleViewer, s.handleListVolumes)))
+	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleViewer, s.handleResources)))
 
 	// Mutating routes (admin and above).
 	mux.HandleFunc("POST /deploy", s.requireAuth(s.requireRole(RoleAdmin, s.handleDeploy)))
@@ -104,7 +111,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1"}})
 }
 
 // requireAuth reads the full request body (needed for the signature's body hash),

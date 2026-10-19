@@ -19,6 +19,7 @@ var version = "dev"
 //   NASHUBS_HOST_DATA_DIR   = the SAME directory as seen by the host Docker daemon,
 //                             needed because `docker compose -f <path>` is resolved on the host.
 type Config struct {
+	AutoProxy         bool
 	Port              string
 	DataDir           string // container view (writable mount)
 	HostDataDir       string // host view, for `docker compose -f`
@@ -31,6 +32,7 @@ type Config struct {
 
 func loadConfig() Config {
 	c := Config{
+		AutoProxy:     envOr("AUTO_PROXY", "true") == "true",
 		Port:          envOr("PORT", "8443"),
 		DataDir:       envOr("DATA_DIR", "/data"),
 		NginxConfDir:  envOr("NGINX_CONF_DIR", "/etc/nginx/conf.d"),

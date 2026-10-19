@@ -83,6 +83,14 @@ type authResult struct {
 
 // verifyRequest validates the HTTP signature. Returns the trusted keyId on success.
 func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error) {
+	return s.verifySignature(r, body, true)
+}
+
+// Enrollment proves possession of a new key; only an owner invitation can authorize it.
+func (s *server) verifySignature(r *http.Request, body []byte, requireTrusted bool) (authResult, error) {
+	if s.devices == nil || s.devices.loadErr != nil {
+		return authResult{}, fmt.Errorf("device store unavailable")
+	}
 	keyID, tsStr, nonce, sigB64, err := signatureHeaders(r.Header)
 	if err != nil {
 		return authResult{}, err
@@ -104,7 +112,7 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	if dev != nil && dev.revoked() {
 		return authResult{}, fmt.Errorf("device revoked")
 	}
-	if dev == nil && !s.cfg.TrustedPublicKeys[keyID] {
+	if requireTrusted && dev == nil && !s.cfg.TrustedPublicKeys[keyID] {
 		return authResult{}, fmt.Errorf("untrusted key")
 	}
 	pub, err := base64.StdEncoding.DecodeString(keyID)

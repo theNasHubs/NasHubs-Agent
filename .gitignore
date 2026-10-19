@@ -3,3 +3,13 @@
 /bin/
 /nasdeck-agent*
 /nashubs-agent
+.tmp/
+*.local.json
+*.test
+*.apk
+*.aab
+*.key
+*.pem
+.env
+.env.*
+!.env.example

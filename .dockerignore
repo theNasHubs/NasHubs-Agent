@@ -2,3 +2,12 @@
 bin/
 agent
 nasdeck-agent*
+.tmp
+*.local.json
+.env*
+*.key
+*.pem
+*.test
+nasdeck-agent
+nasdeck-agent-linux
+bin

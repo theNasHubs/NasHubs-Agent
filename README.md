@@ -2,7 +2,7 @@
 
 **NasHubs Agent** là một ứng dụng siêu nhẹ (Microservice) được viết bằng Golang, đóng vai trò như một "Điệp viên ngầm" được cài đặt trực tiếp trên hệ điều hành của NAS (Network Attached Storage), đặc biệt tối ưu cho Synology DSM.
 
-Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hóa từ ứng dụng di động **NasHubs iOS App** và thực thi chúng ở cấp độ hệ thống, giúp bạn quản lý NAS mà không cần phải mở giao diện web DSM rườm rà.
+Nhiệm vụ duy nhất của nó là nhận các lệnh điều khiển mã hóa từ ứng dụng di động **NasHubs iOS và Android** và thực thi chúng ở cấp độ hệ thống, giúp bạn quản lý NAS mà không cần phải mở giao diện web DSM rườm rà.
 
 ---
 
@@ -25,10 +25,10 @@ Agent tích hợp sẵn logic để điều khiển các đường hầm VPN th�
 - **Cloudflare Zero Trust:** Nó có khả năng "luồn" vào container Cloudflared, đọc cấu hình xác thực, và tự động gọi API `route dns` để gán tên miền phụ (VD: `immich.domain.com`) trỏ thẳng về NAS của bạn.
 - **Reverse Proxy nội bộ:** Tích hợp Nginx để tự động phân luồng giao thông (Subpath routing), cho phép gom nhiều ứng dụng vào chung một tên miền (VD: `nas.domain.com/apps/hello-world`).
 
-### 3. Giao tiếp siêu bảo mật (TOFU & HMAC)
+### 3. Giao tiếp bảo mật (TLS pinning & Ed25519)
 Mọi kết nối từ App iOS đến Agent đều không dùng mật khẩu.
 - **TOFU (Trust On First Use):** Khi kết nối lần đầu, Agent cấp một chứng chỉ tự ký (Self-signed Certificate). App iOS sẽ ghim (Pin) dấu vân tay của chứng chỉ này lại. Nếu ai đó cố gắng thực hiện Man-In-The-Middle attack, App sẽ chặn đứng ngay lập tức!
-- **Chữ ký Request (HMAC Signature):** Mọi request gửi đi đều kèm theo Timestamp, Nonce, và được ký bằng khóa ECDSA Private Key ẩn sâu trong phần cứng mã hóa (Secure Enclave) của iPhone. Agent giữ Public Key và sẽ từ chối mọi truy cập giả mạo.
+- **Chữ ký request (Ed25519):** Request được ký kèm timestamp, nonce và hash nội dung. Agent kiểm tra chữ ký, chống replay và áp quyền thiết bị đã ghép đôi. TLS dùng chứng chỉ ECDSA P-256 được lưu bền vững; hai loại khóa có vai trò riêng.
 
 ---
 
@@ -70,3 +70,8 @@ docker build -t ghcr.io/thenashubs/nashubs-agent:latest .
 
 ---
 *Thuộc Hệ sinh thái NasHubs. Cảm ơn bạn đã quan tâm đóng góp!*
+# Device enrollment update
+
+See [DEVICE_ENROLLMENT.md](DEVICE_ENROLLMENT.md) for install-once provisioning,
+live owner invitations, root recovery and backward compatibility. The current
+request signing protocol is Ed25519; the TLS certificate uses ECDSA P-256.

@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/subtle"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -36,11 +38,6 @@ type pairResponse struct {
 //
 // The request is already signature-authenticated by middleware.
 func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
-	if !s.pairLimiter.allow(clientIP(r)) {
-		writeJSON(w, http.StatusTooManyRequests, errMap("too many pairing attempts", nil))
-		return
-	}
-
 	auth := authFrom(r)
 	var req pairRequest
 	if err := decodeBody(r, &req); err != nil {
@@ -61,6 +58,13 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A reconnect with a verified enrolled key does not guess a secret. Keep
+	// bootstrap throttling for new keys; the general request limiter still
+	// protects enrolled clients without locking out normal screen navigation.
+	if !s.pairLimiter.allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, errMap("too many pairing attempts", nil))
+		return
+	}
 
 	// New key → must present the pairing secret within the window. Only keys trusted at bootstrap
 	// (env) reach this handler at all, and each enrols once; every other request from an env key
@@ -78,6 +82,25 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, errMap("pairing secret mismatch", nil))
 		return
 	}
+
+	// Legacy bootstrap consumption is durable per env-trusted key, preserving
+	// upstream's multiple-bootstrap-device behavior without accepting a lost store.
+	marker := filepath.Join(s.cfg.DataDir, ".bootstrap-"+invitationHash(s.cfg.PairingSecret+"\n"+auth.keyID)+".used")
+	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			writeJSON(w, 403, errMap("pairing already completed", nil))
+		} else {
+			writeJSON(w, 500, errMap("persist bootstrap consumption", nil))
+		}
+		return
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		writeJSON(w, 500, errMap("persist bootstrap consumption", nil))
+		return
+	}
+	f.Close()
 
 	role := RoleAdmin
 	if s.devices.isEmpty() {

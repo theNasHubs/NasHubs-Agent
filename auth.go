@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,6 +27,12 @@ const (
 	hdrTs    = "X-NasHubs-Ts"
 	hdrNonce = "X-NasHubs-Nonce"
 	hdrSig   = "X-NasHubs-Sig"
+	// hdrAud binds a signed request to THIS agent (#34): clients send the
+	// pinned cert fingerprint, and it is covered by the signature. A request
+	// captured on agent A then fails verification on agent B. The header is
+	// optional for the transition period (older clients omit it), but when
+	// present a mismatch is rejected, never ignored.
+	hdrAud = "X-NasHubs-Aud"
 
 	maxSkew  = 60 * time.Second
 	nonceTTL = 2 * time.Minute
@@ -117,7 +124,14 @@ func (s *server) verifyRequest(r *http.Request, body []byte) (authResult, error)
 	if err != nil {
 		return authResult{}, fmt.Errorf("bad signature encoding")
 	}
-	base := signatureBase(r.Method, r.URL.Path, tsStr, nonce, body)
+	// Audience binding: when the client sends X-NasHubs-Aud it must equal this
+	// agent's cert fingerprint and is covered by the signature — so a captured
+	// request replays nowhere else. Absent header → legacy base (transition).
+	aud := r.Header.Get(hdrAud)
+	if aud != "" && !hmac.Equal([]byte(aud), []byte(s.certFingerprint)) {
+		return authResult{}, fmt.Errorf("audience mismatch")
+	}
+	base := signatureBase(r.Method, r.URL.Path, tsStr, nonce, aud, body)
 	if !ed25519.Verify(ed25519.PublicKey(pub), base, sig) {
 		return authResult{}, fmt.Errorf("invalid signature")
 	}
@@ -174,8 +188,13 @@ func signatureHeaders(h http.Header) (keyID, ts, nonce, sig string, err error) {
 }
 
 // signatureBase builds the canonical message that is signed/verified.
-func signatureBase(method, path, ts, nonce string, body []byte) []byte {
+// The audience (agent cert fingerprint) is an optional trailing line: empty aud
+// produces the exact legacy base, so pre-audience clients keep working.
+func signatureBase(method, path, ts, nonce, aud string, body []byte) []byte {
 	sum := sha256.Sum256(body)
-	// method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + hex(sha256(body))
-	return []byte(method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + hex.EncodeToString(sum[:]))
+	base := method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + hex.EncodeToString(sum[:])
+	if aud != "" {
+		base += "\n" + aud
+	}
+	return []byte(base)
 }

@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Run the test job on PRs so fixes are gated before merge, not just on main.
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 env:
@@ -31,6 +34,8 @@ jobs:
 
   build-push:
     # Never publish :latest from a commit whose tests fail.
+    # PR events run the test gate only — never build or push from a fork/branch.
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
     permissions:

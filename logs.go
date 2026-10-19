@@ -10,6 +10,21 @@ import (
 	"strings"
 )
 
+// maxLogFollowStreams caps concurrent `?follow` streams: each one holds a
+// `docker compose logs -f` subprocess plus a network connection for its whole
+// lifetime, so an unbounded count is a trivial resource-exhaustion vector.
+const maxLogFollowStreams = 8
+
+// sensitiveLogIDs are app ids whose logs may contain infra secrets (tunnel
+// credentials echoed on start, agent internals). Only the owner may stream
+// them. Kept separate from infraAppIDs (defined in deploy.go on the sibling
+// fix branch) to avoid a merge-time symbol clash; merge PR #30 first and
+// reconcile.
+var sensitiveLogIDs = map[string]bool{
+	"agent": true, "cloudflared": true, "cloudflared-quick": true,
+	"cloudflared-login": true, "tailscale": true,
+}
+
 // handleLogs streams container logs as Server-Sent Events.
 //
 //	GET /logs/{id}?follow=1   → docker compose logs -f --tail 200
@@ -20,7 +35,18 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
 		return
 	}
+	if sensitiveLogIDs[id] && authFrom(r).role != RoleOwner {
+		writeJSON(w, http.StatusForbidden, errMap("infra logs require the owner role", nil))
+		return
+	}
 	follow := r.URL.Query().Has("follow")
+	if follow && !s.acquireLogStream() {
+		writeJSON(w, http.StatusTooManyRequests, errMap("too many concurrent log streams", nil))
+		return
+	}
+	if follow {
+		defer s.releaseLogStream()
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -77,11 +103,21 @@ type sseWriter struct {
 	buf []byte
 }
 
+// maxSSELineLen bounds one buffered line: a container writing megabytes of
+// output without newlines would grow s.buf unbounded (memory + a single
+// multi-MB SSE frame). Lines longer than this are flushed truncated.
+const maxSSELineLen = 256 * 1024
+
 func (s *sseWriter) Write(p []byte) (int, error) {
 	s.buf = append(s.buf, p...)
 	for {
 		i := bytes.IndexByte(s.buf, '\n')
 		if i < 0 {
+			if len(s.buf) > maxSSELineLen {
+				fmt.Fprintf(s.w, "data: %s [line truncated at %d bytes]\n\n", s.buf[:maxSSELineLen], len(s.buf))
+				s.f.Flush()
+				s.buf = s.buf[:0]
+			}
 			break
 		}
 		line := string(s.buf[:i])

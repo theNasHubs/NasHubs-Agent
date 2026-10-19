@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -94,19 +95,27 @@ func (p composePolicy) checkService(svc map[string]any) error {
 		return fmt.Errorf("container_name %s is reserved", agentContainerName)
 	}
 	if v, ok := svc["network_mode"]; ok {
-		// host networking is allowed (tailscale/cloudflared/pihole need it; it is
-		// networking, not a path into the host). container: is still rejected
-		// (would join the agent's own namespace), as is ${} interpolation.
+		// Non-owner may use bridge/none/custom networks only. host networking
+		// puts the container on the host stack (LAN sniffing, port hijack of
+		// DSM/agent — #37); service:/container: join another container's
+		// namespace (possibly an infra container's). ${} interpolation stays
+		// rejected.
 		s, isString := v.(string)
-		if !isString || strings.Contains(s, "$") || strings.HasPrefix(s, "container:") {
-			return fmt.Errorf("network_mode %v is not allowed", v)
+		if !isString || strings.Contains(s, "$") ||
+			s == "host" || strings.HasPrefix(s, "container:") || strings.HasPrefix(s, "service:") {
+			return fmt.Errorf("network_mode %v is not allowed (owner required)", v)
 		}
 	}
 	if v, ok := svc["cap_add"]; ok {
-		for _, c := range asList(v) {
-			if !allowedCap(c) {
-				return fmt.Errorf("capability %v is not allowed (only NET_ADMIN, NET_RAW)", c)
-			}
+		// The only caps ever allowed (NET_ADMIN/NET_RAW) are network-level
+		// powers — LAN MITM, firewall bypass (#37). Non-owner gets none.
+		if len(asList(v)) > 0 {
+			return fmt.Errorf("cap_add is not allowed (owner required)")
+		}
+	}
+	if v, ok := svc["ports"]; ok {
+		if err := checkPublishedPorts(asList(v)); err != nil {
+			return err
 		}
 	}
 	if v, ok := svc["devices"]; ok {
@@ -169,6 +178,53 @@ func (p composePolicy) checkVolume(vol any) error {
 	return fmt.Errorf("volume %v is not allowed", vol)
 }
 
+// checkPublishedPorts gates the host-side port of a non-owner service's
+// `ports:` mapping (#37). Publishing a privileged or infrastructure port lets
+// a mini-app hijack DSM (5000/5001), the agent (8443) or other daemons; the
+// denylist mirrors proxyDeniedPorts. Container-side ports are unrestricted.
+func checkPublishedPorts(ports []any) error {
+	for _, p := range ports {
+		host := ""
+		switch v := p.(type) {
+		case string:
+			// "host:container", "ip:host:container", or bare "container".
+			fields := strings.Split(v, ":")
+			switch len(fields) {
+			case 1:
+				continue // container port only
+			case 2:
+				host = fields[0]
+			default:
+				host = fields[len(fields)-2]
+			}
+		case int:
+			continue // bare container port
+		case map[string]any:
+			// Long syntax: published holds the host port (may be "80" or "80-90").
+			pub, _ := v["published"].(string)
+			if pub == "" {
+				if n, ok := v["published"].(int); ok {
+					pub = fmt.Sprint(n)
+				}
+			}
+			host, _, _ = strings.Cut(pub, "-")
+		default:
+			return fmt.Errorf("ports entry %v is not allowed", p)
+		}
+		if host == "" {
+			continue
+		}
+		n, err := strconv.Atoi(host)
+		if err != nil {
+			return fmt.Errorf("ports entry %v is not allowed", p)
+		}
+		if n < 1024 || proxyDeniedPorts[n] {
+			return fmt.Errorf("host port %d is restricted (owner required)", n)
+		}
+	}
+	return nil
+}
+
 // volumeIsRO reports whether the short-syntax mount options contain the ro flag.
 func volumeIsRO(opts []string) bool {
 	for _, o := range opts {
@@ -201,10 +257,12 @@ func (p composePolicy) checkBindSource(src string, readOnly bool) error {
 		}
 		return nil
 	}
-	if src == "/dev/net/tun" { // the VPN tun device; needs NET_ADMIN too
-		return nil
-	}
 	bad := func(why string) error { return fmt.Errorf("bind mount %q: %s", src, why) }
+	if src == "/dev/net/tun" {
+		// VPN tun device — only meaningful with NET_ADMIN, which non-owner no
+		// longer gets (#37). Denied for non-owner along with cap_add.
+		return bad("the VPN tun device requires the owner role")
+	}
 	if strings.HasPrefix(src, "~") {
 		return bad("home directory paths are not allowed")
 	}
@@ -302,24 +360,14 @@ func checkTopLevelResources(kind string, v any) error {
 	return nil
 }
 
-// allowedCap reports whether a cap_add entry is one of the narrow networking
-// capabilities VPN/DNS apps need. Everything else (SYS_ADMIN, SYS_MODULE,
-// SYS_PTRACE, ALL, ...) is rejected: those grant host compromise.
-func allowedCap(c any) bool {
-	s, ok := c.(string)
-	if !ok {
-		return false
-	}
-	s = strings.ToUpper(strings.TrimSpace(s))
-	s = strings.TrimPrefix(s, "CAP_")
-	return s == "NET_ADMIN" || s == "NET_RAW"
-}
-
+// allowedDevice gates the `devices:` list for non-owner services. /dev/dri
+// (GPU for transcoding) stays; /dev/net/tun is owner-only along with the
+// network capabilities it needs (#37).
 func allowedDevice(src string) bool {
 	if strings.Contains(src, "..") {
 		return false
 	}
-	return src == "/dev/dri" || strings.HasPrefix(src, "/dev/dri/") || src == "/dev/net/tun"
+	return src == "/dev/dri" || strings.HasPrefix(src, "/dev/dri/")
 }
 
 func asList(v any) []any {

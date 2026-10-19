@@ -44,19 +44,14 @@ services:
 volumes:
   cache: {}
 `,
-		"long syntax, anchors, vpn sidecar": `
+		"long syntax, anchors": `
 x-common: &common
   restart: always
   logging: {driver: json-file}
 services:
-  vpn:
-    <<: *common
-    image: qmcgaw/gluetun
-    devices: ["/dev/net/tun"]
   app:
     <<: *common
     image: qbittorrent
-    network_mode: service:vpn
     tmpfs: [/run]
     volumes:
       - type: bind
@@ -178,27 +173,6 @@ func TestDeployPolicyAppliesToAdminOnly(t *testing.T) {
 func TestComposePolicyFix2Allows(t *testing.T) {
 	p := testPolicy(t)
 	ok := map[string]string{
-		"pihole cap NET_ADMIN + host-net": `
-services:
-  pihole:
-    image: pihole/pihole
-    network_mode: host
-    cap_add: [NET_ADMIN]
-    volumes:
-      - /volume1/docker/pihole/etc:/etc/pihole
-`,
-		"cloudflared host-net + named cf-creds volume": `
-services:
-  cf:
-    image: cloudflare/cloudflared
-    user: root
-    network_mode: "host"
-    volumes:
-      - cf-creds:/root/.cloudflared
-volumes:
-  cf-creds:
-    name: nashubs-cf-creds
-`,
 		"immich localtime RO bind": `
 services:
   s:
@@ -207,16 +181,6 @@ services:
       - /volume1/photos:/data
       - /etc/localtime:/etc/localtime:ro
     ports: ["2283:2283"]
-`,
-		"tun device bind + NET_ADMIN (vpn, no sys_module)": `
-services:
-  vpn:
-    image: tailscale/tailscale
-    network_mode: host
-    cap_add: [net_admin, net_raw]
-    volumes:
-      - /volume1/appdata/ts:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
 `,
 		"timezone RO long syntax": `
 services:
@@ -263,6 +227,21 @@ func TestComposePolicyFix2StillDenies(t *testing.T) {
 		"named volume driver_opts":   svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    name: x\n    driver_opts: {type: none, o: bind, device: /}\n",
 		"named volume external":      svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    external: true\n",
 		"host net external network":  svc("") + "networks:\n  n:\n    name: host\n    external: true\n",
+		// #37: non-owner has no network-level powers at all — no host/service
+		// network namespaces, no caps, no tun, no privileged/sensitive ports.
+		"network_mode host":        svc("    network_mode: host\n"),
+		"network_mode service":     svc("    network_mode: service:vpn\n"),
+		"cap NET_ADMIN":            svc("    cap_add: [NET_ADMIN]\n"),
+		"cap net_admin lowercase":  svc("    cap_add: [net_admin, net_raw]\n"),
+		"tun in devices":           svc("    devices: [\"/dev/net/tun\"]\n"),
+		"tun bind mount":           svc("    volumes: [\"/dev/net/tun:/dev/net/tun\"]\n"),
+		"host port 80":             svc("    ports: [\"80:8080\"]\n"),
+		"host port DSM":            svc("    ports: [\"5000:5000\"]\n"),
+		"host port agent":          svc("    ports: [\"8443:8443\"]\n"),
+		"host port ssh":            svc("    ports: [\"22:22\"]\n"),
+		"host port ip-bound DSM":   svc("    ports: [\"127.0.0.1:5001:5001\"]\n"),
+		"host port long syntax":    svc("    ports: [{target: 80, published: \"443\"}]\n"),
+		"host port range hits 22":  svc("    ports: [{target: 22, published: \"22-30\"}]\n"),
 	}
 	for name, c := range bad {
 		if err := p.check([]byte(c)); err == nil {

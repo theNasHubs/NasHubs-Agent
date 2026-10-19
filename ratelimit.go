@@ -20,6 +20,12 @@ func newRateLimiter(max int, window time.Duration) *rateLimiter {
 	return &rateLimiter{hits: map[string][]time.Time{}, max: max, window: window}
 }
 
+// maxLimiterKeys bounds the distinct keys tracked. Signing keys are
+// attacker-chosen strings, so without a cap a flood of fake keyIds would grow
+// the map unbounded. When full, new keys share one overflow bucket — flooding
+// then self-throttles without affecting known keys.
+const maxLimiterKeys = 4096
+
 // allow reports whether another hit is permitted for key within the window,
 // and records it when so.
 func (rl *rateLimiter) allow(key string) bool {
@@ -27,6 +33,16 @@ func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	cutoff := now.Add(-rl.window)
+	if _, ok := rl.hits[key]; !ok && len(rl.hits) >= maxLimiterKeys {
+		for k, ts := range rl.hits { // prune fully-expired buckets first
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(rl.hits, k)
+			}
+		}
+		if len(rl.hits) >= maxLimiterKeys {
+			key = "\x00overflow"
+		}
+	}
 	kept := rl.hits[key][:0]
 	for _, t := range rl.hits[key] {
 		if t.After(cutoff) {

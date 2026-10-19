@@ -86,3 +86,21 @@ tag is emitted only on the default branch. Android's preview installer selects
 an exact commit tag rather than silently upgrading existing installations.
 Publishing source to Git does not itself publish a Docker image; the workflow
 and an anonymous registry manifest check must both succeed before installation.
+
+## DSM HTTPS bootstrap
+
+The same preview image includes a short-lived `dsm-bootstrap` command. DSM
+creates a named installer container with only the Docker socket mounted. Its
+typed JSON payload accepts only an exact SHA-tagged NasHubs image, an Ed25519
+public key, a random bootstrap secret, `/volumeN` mounts, and the dedicated
+`/volumeN/docker/nashubs-agent/data` directory. It never accepts shell commands.
+
+The installer creates the real Agent once using the host daemon, preserving
+same-path volume mounts that DSM's profile editor cannot represent reliably.
+An existing Agent is neither recreated nor restarted. A root-only identity CLI
+validates its device store; new devices receive a live owner/admin invitation,
+while revoked devices fail closed. The result contains the public certificate
+fingerprint and, when needed, a short-lived invitation. Only authenticated DSM
+administrators can read installer logs; Android consumes the invitation and
+deletes the installer container/logs. The shared Agent container is preserved.
+No Docker TCP endpoint, SSH service or DSM scheduled task is required.

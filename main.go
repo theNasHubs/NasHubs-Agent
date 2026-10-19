@@ -29,6 +29,16 @@ func ensureDockerOnPATH() {
 }
 
 func main() {
+	ensureDockerOnPATH()
+	if len(os.Args) > 1 && os.Args[1] == "dsm-bootstrap" {
+		os.Exit(runDsmBootstrap())
+	}
+	if len(os.Args) == 3 && os.Args[1] == "bootstrap-identity" {
+		if err := runBootstrapIdentity(os.Args[2]); err != nil {
+			log.Fatal("Agent identity unavailable")
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "invite" {
 		if err := runInvitationCLI(os.Args[2:]); err != nil {
 			log.Fatal(err)

@@ -26,6 +26,27 @@ var idSafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // container is removed (not stopped) its restart policy never brings it back.
 var reservedAppIDs = map[string]bool{"agent": true}
 
+// infraAppIDs are the remote-access deployments the agent itself manages.
+// Removing or redeploying them severs the only remote path to the NAS, so for
+// non-owner roles they are read-only; the owner can still manage them.
+var infraAppIDs = map[string]bool{
+	"cloudflared":       true,
+	"cloudflared-quick": true,
+	"cloudflared-login": true,
+	"tailscale":         true,
+}
+
+// infraContainerNames are the containers backing the agent's own
+// infrastructure. A non-owner compose may neither claim one of these names
+// nor cause the matching container to be force-removed.
+var infraContainerNames = map[string]bool{
+	agentContainerName:          true,
+	"nashubs-cloudflared":       true,
+	"nashubs-cloudflared-quick": true,
+	"nashubs-cloudflared-login": true,
+	"nashubs-tailscale":         true,
+}
+
 // agentContainerName is the agent's own container. No deploy may ever name a
 // service this, nor rm it, or the deploy would kill the control plane.
 const agentContainerName = "nashubs-agent"
@@ -64,12 +85,25 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
 		return
 	}
+	isOwner := authFrom(r).role == RoleOwner
+	if !isOwner && infraAppIDs[req.ID] {
+		writeJSON(w, http.StatusForbidden, errMap("this deployment is managed by the owner role", nil))
+		return
+	}
 	// No service may claim the agent's own container name (any role): a later
 	// rm of it would remove the control plane mid-request.
 	for _, name := range composeContainerNames([]byte(req.Compose)) {
 		if name == agentContainerName {
 			writeJSON(w, http.StatusBadRequest, errMap("container_name "+agentContainerName+" is reserved", nil))
 			return
+		}
+	}
+	if !isOwner {
+		for _, name := range composeContainerNames([]byte(req.Compose)) {
+			if infraContainerNames[name] {
+				writeJSON(w, http.StatusForbidden, errMap("container_name "+name+" is reserved", nil))
+				return
+			}
 		}
 	}
 	if req.InternalPort != 0 {
@@ -89,7 +123,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// Container path (writable mount) and the matching host path the daemon sees.
 	dir := filepath.Join(s.cfg.DataDir, req.ID, version)
 	hostDir := filepath.Join(s.cfg.HostDataDir, req.ID, version)
-	if authFrom(r).role != RoleOwner {
+	if !isOwner {
 		pol := composePolicy{appID: req.ID, dataDir: s.cfg.DataDir, hostDataDir: s.cfg.HostDataDir, projectDir: dir}
 		if err := pol.check([]byte(req.Compose)); err != nil {
 			writeJSON(w, http.StatusForbidden, errMap("compose option requires the owner role", err))
@@ -119,9 +153,18 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// without scanning for or touching any other container or volume.
 	_ = exec.Command("docker", "rm", "-f", "nashubs-"+req.ID).Run()
 	for _, name := range composeContainerNames([]byte(req.Compose)) {
-		if name != "nashubs-"+req.ID && name != agentContainerName {
-			_ = exec.Command("docker", "rm", "-f", name).Run()
+		if name == "nashubs-"+req.ID || name == agentContainerName {
+			continue
 		}
+		// A non-owner deploy may only clear a container that belongs to this
+		// compose project (it is a redeploy of its own app). Anything else —
+		// infra containers or unrelated user containers — is left in place so
+		// `compose up` fails safely on the name conflict instead of the agent
+		// force-removing a container the deployer does not own.
+		if !isOwner && (infraContainerNames[name] || containerProject(name) != "nashubs-"+req.ID) {
+			continue
+		}
+		_ = exec.Command("docker", "rm", "-f", name).Run()
 	}
 
 	out := ""
@@ -234,6 +277,18 @@ func composeEnv(environ []string) []string {
 		}
 	}
 	return out
+}
+
+// containerProject returns the compose project label of a container ("" when
+// it does not exist or was not created by compose). Used to prove that a
+// container_name conflict belongs to the deploying project before rm -f.
+func containerProject(name string) string {
+	out, err := exec.Command("docker", "inspect", "-f",
+		"{{index .Config.Labels \"com.docker.compose.project\"}}", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // dockerNameRe is Docker's own container-name grammar. A name that does not

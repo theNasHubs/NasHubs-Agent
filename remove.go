@@ -17,6 +17,10 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
 		return
 	}
+	if authFrom(r).role != RoleOwner && infraAppIDs[id] {
+		writeJSON(w, http.StatusForbidden, errMap("this deployment is managed by the owner role", nil))
+		return
+	}
 
 	projectDir := filepath.Join(s.cfg.DataDir, id)
 	st, err := loadState(s.cfg.DataDir, id)

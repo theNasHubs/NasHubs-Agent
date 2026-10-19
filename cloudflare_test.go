@@ -8,16 +8,29 @@ import (
 )
 
 func TestValidIngressService(t *testing.T) {
-	ok := []string{"http://localhost:8096", "https://10.0.0.2:443", "tcp://10.0.0.2:22", "ssh://h:22", "http_status:404"}
-	for _, s := range ok {
-		if !validIngressService(s) {
-			t.Errorf("want valid: %q", s)
+	// Loopback services are the only targets a non-owner may use (#32).
+	okAdmin := []string{"http://localhost:8096", "https://127.0.0.1:8443", "http://localhost", "http://[::1]:9", "http://localhost:5000/path", "http_status:404", "http_status:503"}
+	for _, s := range okAdmin {
+		if !validIngressService(s, false) {
+			t.Errorf("admin want valid: %q", s)
 		}
 	}
-	bad := []string{"", "javascript:1", "file:///etc", "http://x\nwarp-routing: {enabled: true}", "http://x yes", "http://x\t"}
+	// Non-loopback and non-http targets are owner-only.
+	ownerOnly := []string{"https://10.0.0.2:443", "tcp://10.0.0.2:22", "ssh://h:22", "rdp://h:3389", "unix:/run/x.sock", "http://nas.lan:5000"}
+	for _, s := range ownerOnly {
+		if validIngressService(s, false) {
+			t.Errorf("admin must not use: %q", s)
+		}
+		if !validIngressService(s, true) {
+			t.Errorf("owner want valid: %q", s)
+		}
+	}
+	bad := []string{"", "javascript:1", "file:///etc", "http://x\nwarp-routing: {enabled: true}", "http://x yes", "http://x\t",
+		"http://localhost.evil.com", "http://localhost:0", "http://localhost:99999", "http_status:x", "http_status:99",
+		"http://localhost@evil.com", "tcp://localhost:22"}
 	for _, s := range bad {
-		if validIngressService(s) {
-			t.Errorf("want invalid: %q", s)
+		if validIngressService(s, false) {
+			t.Errorf("admin want invalid: %q", s)
 		}
 	}
 }

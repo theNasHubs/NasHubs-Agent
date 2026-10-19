@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -153,6 +154,10 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal: deploy may have succeeded; surface in output.
 		out += fmt.Sprintf("\n[warn] state save: %v", err)
 	}
+
+	// Bound disk usage: every deploy writes a new immutable version dir and
+	// nothing would ever reclaim them. Keep the newest few for rollback.
+	pruneVersions(filepath.Dir(dir), 5)
 
 	resp := deployResponse{
 		OK:       runErr == nil,
@@ -319,6 +324,39 @@ func bindHostPath(v string) string {
 		return host
 	}
 	return "" // named volume (e.g. "myvol:/data")
+}
+
+// pruneVersions removes the oldest v<sha12> directories under projectDir,
+// keeping the newest `keep`. Deploy artifacts are immutable and accumulate
+// forever otherwise — each deploy is a new directory of YAML on the NAS disk.
+// Best-effort: removal failures are ignored.
+func pruneVersions(projectDir string, keep int) {
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return
+	}
+	type ver struct {
+		name string
+		mod  time.Time
+	}
+	var vers []ver
+	for _, e := range entries {
+		if !e.IsDir() || !versionDirName.MatchString(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		vers = append(vers, ver{e.Name(), info.ModTime()})
+	}
+	if len(vers) <= keep {
+		return
+	}
+	sort.Slice(vers, func(i, j int) bool { return vers[i].mod.After(vers[j].mod) })
+	for _, v := range vers[keep:] {
+		_ = os.RemoveAll(filepath.Join(projectDir, v.name))
+	}
 }
 
 // --- deploy state persistence ---

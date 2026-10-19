@@ -82,6 +82,10 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errMap("invalid internalPort or pathPrefix", nil))
 			return
 		}
+		if err := validProxyTarget(prefix, req.InternalPort, authFrom(r).role == RoleOwner); err != nil {
+			writeJSON(w, http.StatusForbidden, errMap("proxy target not allowed", err))
+			return
+		}
 	}
 
 	sum := sha256.Sum256([]byte(req.Compose))

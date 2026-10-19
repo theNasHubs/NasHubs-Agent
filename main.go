@@ -58,6 +58,8 @@ func main() {
 		// Generous per-IP cap for all signed requests: normal polling is well
 		// under this; a flood is rejected before the body is read.
 		reqLimiter: newRateLimiter(240, 10*time.Second),
+		// Cap concurrent /logs?follow SSE streams (each pins a subprocess).
+		logStreamSlots: make(chan struct{}, maxLogFollowStreams),
 	}
 	log.Printf("using compose: %v", s.composeArgs)
 

@@ -37,6 +37,59 @@ func validAppProxy(prefix string, port int) bool {
 	return appPrefixSafe.MatchString(prefix) && port > 0 && port <= 65535
 }
 
+// proxyDeniedPrefixSegments are first-segment names a proxy may not claim.
+// The two agent routes are denied for EVERY role — shadowing them severs
+// remote access the same way deleting dsm.nashubs-agent.conf did (#31).
+// The rest is DSM's own API/auth surface: proxying /webapi, /login, … would
+// put a mini-app in front of DSM's endpoints (phishing/credential capture),
+// so they are denied for non-owner roles.
+var proxyDeniedPrefixSegments = map[string]bool{
+	"agent": true, "api": true, "auth": true, "admin": true, "login": true,
+	"sso": true, "oauth": true, "webapi": true, "webman": true, "query": true,
+	"entry.cgi": true, "nashubs-agent": true, "nasdeck-agent": true,
+}
+
+// proxyDeniedPorts are host loopback ports a non-owner may never expose:
+// DSM itself (5000/5001), the agent (8443), SSH, sync/iSCSI and docker daemons.
+var proxyDeniedPorts = map[int]bool{
+	22: true, 23: true,
+	2375: true, 2376: true, 2377: true, // docker/swarm API
+	3260: true, 3261: true, 3262: true, 3263: true, 3264: true, 3265: true, // iSCSI
+	5000: true, 5001: true, 5005: true, 5006: true, // DSM web/filestation
+	6690: true, // Synology Drive/Cloud Sync
+	8443: true, // the agent itself
+}
+
+// proxyPrefixSegment returns the first path segment: "/apps/qbit" → "apps".
+func proxyPrefixSegment(prefix string) string {
+	trimmed := strings.TrimPrefix(prefix, "/")
+	if i := strings.IndexByte(trimmed, '/'); i >= 0 {
+		return trimmed[:i]
+	}
+	return trimmed
+}
+
+// validProxyTarget enforces the prefix/port fence for /proxy and the
+// auto-proxy path of /deploy. Reserved agent prefixes fail for every role;
+// the DSM-surface prefix denylist and the sensitive-port denylist apply to
+// non-owner roles only.
+func validProxyTarget(prefix string, port int, owner bool) error {
+	switch seg := proxyPrefixSegment(prefix); seg {
+	case "nashubs-agent", "nasdeck-agent":
+		return fmt.Errorf("pathPrefix %q is reserved for the agent route", prefix)
+	case "":
+		return fmt.Errorf("invalid pathPrefix %q", prefix)
+	default:
+		if !owner && proxyDeniedPrefixSegments[seg] {
+			return fmt.Errorf("pathPrefix %q is reserved for DSM/agent (owner required)", prefix)
+		}
+	}
+	if !owner && (port < 1024 || proxyDeniedPorts[port]) {
+		return fmt.Errorf("internalPort %d is restricted (owner required)", port)
+	}
+	return nil
+}
+
 // handleProxy creates or removes an Nginx reverse proxy location block in
 // DSM's nginx config directory. After writing the config, it reloads nginx
 // so the change takes effect immediately.
@@ -90,6 +143,12 @@ func (s *server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if !pathPrefixSafe.MatchString(prefix) {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid pathPrefix (must be /lowercase-slug)", nil))
+		return
+	}
+	// Reserved agent prefixes are denied for every role; the DSM-surface
+	// prefix denylist + sensitive-port denylist apply to non-owner only.
+	if err := validProxyTarget(prefix, req.InternalPort, authFrom(r).role == RoleOwner); err != nil {
+		writeJSON(w, http.StatusForbidden, errMap("proxy target not allowed", err))
 		return
 	}
 
@@ -184,9 +243,10 @@ location ^~ %s/ {
     proxy_set_header Connection $connection_upgrade;
     proxy_buffering off;
     proxy_request_buffering off;
-    proxy_read_timeout 86400s;
-    proxy_send_timeout 86400s;
-    client_max_body_size 0;
+    # Bounded (was 86400s/0): idle streams cut after 1h; upload body capped 4 GiB.
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_max_body_size 4096m;
 }
 `, pathPrefix, port, pathPrefix, pathPrefix, pathPrefix, port)
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,25 +14,43 @@ import (
 // hostnameRe matches a DNS hostname (labels of letters/digits/hyphen, dots).
 var hostnameRe = regexp.MustCompile(`^(?i)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// validIngressService allows only the cloudflared service forms the app uses.
-func validIngressService(s string) bool {
-	switch {
-	case s == "http_status:404":
-		return true
-	case strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"),
-		strings.HasPrefix(s, "tcp://"), strings.HasPrefix(s, "ssh://"),
-		strings.HasPrefix(s, "rdp://"), strings.HasPrefix(s, "unix:/"):
-	case strings.HasPrefix(s, "http_status:"):
-	default:
-		return false
-	}
+// loopbackServiceRe matches only services on the NAS itself, which is all the
+// app ever configures (e.g. http://localhost:5000, http://localhost:2283).
+// cloudflared runs with network_mode: host, so an unrestricted service URL is
+// an SSRF/public-exposure primitive against the whole LAN.
+var loopbackServiceRe = regexp.MustCompile(`^https?://(localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?(/[\x21-\x7E]*)?$`)
+
+// validIngressService reports whether s may be used as a cloudflared ingress
+// service target. Non-owners are limited to loopback HTTP(S) and http_status;
+// the owner may additionally use tcp/ssh/rdp/unix and non-loopback hosts.
+func validIngressService(s string, isOwner bool) bool {
 	// No control chars / newlines / spaces that could break the config.
 	for _, r := range s {
 		if r <= 0x20 || r == 0x7f {
 			return false
 		}
 	}
-	return true
+	if strings.HasPrefix(s, "http_status:") {
+		code, err := strconv.Atoi(strings.TrimPrefix(s, "http_status:"))
+		return err == nil && code >= 100 && code <= 599
+	}
+	if m := loopbackServiceRe.FindStringSubmatch(s); m != nil {
+		if m[2] == "" {
+			return true
+		}
+		port, _ := strconv.Atoi(m[2])
+		return port >= 1 && port <= 65535
+	}
+	if !isOwner {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"),
+		strings.HasPrefix(s, "tcp://"), strings.HasPrefix(s, "ssh://"),
+		strings.HasPrefix(s, "rdp://"), strings.HasPrefix(s, "unix:/"):
+		return true
+	}
+	return false
 }
 
 type ingressRule struct {
@@ -95,12 +114,13 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 		Tunnel:          uuid,
 		CredentialsFile: fmt.Sprintf("/root/.cloudflared/%s.json", uuid),
 	}
+	isOwner := authFrom(r).role == RoleOwner
 	for _, rule := range req.Ingress {
 		if rule.Hostname != "" && !hostnameRe.MatchString(rule.Hostname) {
 			writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("invalid ingress hostname %q", rule.Hostname)))
 			return
 		}
-		if !validIngressService(rule.Service) {
+		if !validIngressService(rule.Service, isOwner) {
 			writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("invalid ingress service %q", rule.Service)))
 			return
 		}

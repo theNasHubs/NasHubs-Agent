@@ -15,6 +15,16 @@ import (
 // lifetime, so an unbounded count is a trivial resource-exhaustion vector.
 const maxLogFollowStreams = 8
 
+// sensitiveLogIDs are app ids whose logs may contain infra secrets (tunnel
+// credentials echoed on start, agent internals). Only the owner may stream
+// them. Kept separate from infraAppIDs (defined in deploy.go on the sibling
+// fix branch) to avoid a merge-time symbol clash; merge PR #30 first and
+// reconcile.
+var sensitiveLogIDs = map[string]bool{
+	"agent": true, "cloudflared": true, "cloudflared-quick": true,
+	"cloudflared-login": true, "tailscale": true,
+}
+
 // handleLogs streams container logs as Server-Sent Events.
 //
 //	GET /logs/{id}?follow=1   → docker compose logs -f --tail 200
@@ -23,6 +33,10 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/logs/")
 	if !idSafe.MatchString(id) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
+		return
+	}
+	if sensitiveLogIDs[id] && authFrom(r).role != RoleOwner {
+		writeJSON(w, http.StatusForbidden, errMap("infra logs require the owner role", nil))
 		return
 	}
 	follow := r.URL.Query().Has("follow")

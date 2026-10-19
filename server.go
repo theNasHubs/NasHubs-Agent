@@ -25,6 +25,31 @@ type server struct {
 	reqLimiter  *rateLimiter // throttles ALL signed requests per client IP (DoS guard)
 
 	pairMu          sync.Mutex // serialises the enroll decision
+	logStreamSlots  chan struct{} // semaphore: concurrent /logs?follow streams
+}
+
+// acquireLogStream takes one /logs?follow slot (non-blocking). Returns false
+// when maxLogFollowStreams streams are already running.
+func (s *server) acquireLogStream() bool {
+	if s.logStreamSlots == nil {
+		return true // cap disabled (tests/embedded use)
+	}
+	select {
+	case s.logStreamSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *server) releaseLogStream() {
+	if s.logStreamSlots == nil {
+		return
+	}
+	select {
+	case <-s.logStreamSlots:
+	default:
+	}
 }
 
 // detectCompose picks the compose invocation available on the host. DSM 7.0's

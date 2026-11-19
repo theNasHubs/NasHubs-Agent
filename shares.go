@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,4 +61,37 @@ func (s *server) sharesRoot() string {
 		return s.fsRoot
 	}
 	return "/"
+}
+
+// hostLanIPv4 returns the first private IPv4 of a physical-looking interface
+// (skips loopback, Docker bridges/veths and the tailnet). Only meaningful when
+// run in the host network namespace (installer helper with --network host).
+func hostLanIPv4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	return pickLanIPv4(ifaces, func(i net.Interface) ([]net.Addr, error) { return i.Addrs() })
+}
+
+func pickLanIPv4(ifaces []net.Interface, addrs func(net.Interface) ([]net.Addr, error)) string {
+	for _, i := range ifaces {
+		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		n := i.Name
+		if strings.HasPrefix(n, "docker") || strings.HasPrefix(n, "br-") || strings.HasPrefix(n, "veth") || strings.HasPrefix(n, "tailscale") || strings.HasPrefix(n, "tun") || strings.HasPrefix(n, "lxc") {
+			continue
+		}
+		list, err := addrs(i)
+		if err != nil {
+			continue
+		}
+		for _, a := range list {
+			if ipn, ok := a.(*net.IPNet); ok && isLanIPv4(ipn.IP) {
+				return ipn.IP.To4().String()
+			}
+		}
+	}
+	return ""
 }

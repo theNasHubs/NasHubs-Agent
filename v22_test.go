@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -328,4 +329,18 @@ func TestUpgradeKeepsConfigAndRestoresOnFailure(t *testing.T) {
 
 func withAuth(ctx context.Context, role Role) context.Context {
 	return context.WithValue(ctx, authKey, authResult{role: role})
+}
+
+func TestPickLanIPv4SkipsBridgesAndTailnet(t *testing.T) {
+	mk := func(name string) net.Interface { return net.Interface{Name: name, Flags: net.FlagUp} }
+	addrs := map[string]string{"docker0": "172.17.0.1/16", "tailscale0": "100.64.1.2/32", "eth0": "192.168.1.20/24"}
+	got := pickLanIPv4([]net.Interface{mk("docker0"), mk("tailscale0"), mk("eth0")}, func(i net.Interface) ([]net.Addr, error) {
+		_, n, _ := net.ParseCIDR(addrs[i.Name])
+		ip, _, _ := net.ParseCIDR(addrs[i.Name])
+		n.IP = ip
+		return []net.Addr{n}, nil
+	})
+	if got != "192.168.1.20" {
+		t.Fatal(got)
+	}
 }

@@ -39,6 +39,14 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "lan-ip" {
+		// Run with --network host by the installer: prints the NAS LAN IPv4.
+		if ip := hostLanIPv4(); ip != "" {
+			fmt.Println(ip)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "invite" {
 		if err := runInvitationCLI(os.Args[2:]); err != nil {
 			log.Fatal(err)

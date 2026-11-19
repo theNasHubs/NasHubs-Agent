@@ -51,7 +51,12 @@ func TestBootstrapCreatesAgentWithPersistentSamePathVolumesAndLiveOwnerEnrollmen
 	if err != nil || !out.OK || !out.Created || out.Invitation != "one-use-code" {
 		t.Fatalf("result=%+v err=%v", out, err)
 	}
-	run := calls[1]
+	var run []string
+	for _, c := range calls {
+		if len(c) > 2 && c[0] == "run" && c[1] == "-d" {
+			run = c
+		}
+	}
 	for _, value := range []string{"/volume1:/volume1", "/volume2:/volume2", "NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir, "NASHUBS_NGINX_CONF_DIR=none", "8443:8443"} {
 		if !strings.Contains(strings.Join(run, " "), value) {
 			t.Errorf("missing %s", value)

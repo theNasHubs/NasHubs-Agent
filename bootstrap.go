@@ -99,7 +99,7 @@ type inspectedAgent struct {
 
 // upgradeArgs builds the `docker run` argv for the upgraded agent from the
 // existing container's own configuration (env, binds, published ports).
-func upgradeArgs(old inspectedAgent, image string) ([]string, error) {
+func upgradeArgs(old inspectedAgent, image, lanIP string) ([]string, error) {
 	args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped"}
 	sawSock := false
 	for _, b := range old.HostConfig.Binds {
@@ -137,6 +137,17 @@ func upgradeArgs(old inspectedAgent, image string) ([]string, error) {
 		}
 		args = append(args, "-e", e)
 	}
+	if lanIP != "" {
+		hasLan := false
+		for _, e := range old.Config.Env {
+			if strings.HasPrefix(e, "NASHUBS_LAN_IP=") {
+				hasLan = true
+			}
+		}
+		if !hasLan {
+			args = append(args, "-e", "NASHUBS_LAN_IP="+lanIP)
+		}
+	}
 	args = append(args, "-e", "NASHUBS_AGENT_IMAGE="+image, image)
 	return args, nil
 }
@@ -156,7 +167,7 @@ func upgradeAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) erro
 	if list[0].Config.Image == r.Image {
 		return nil
 	}
-	args, err := upgradeArgs(list[0], r.Image)
+	args, err := upgradeArgs(list[0], r.Image, r.LanIP)
 	if err != nil {
 		return err
 	}
@@ -205,6 +216,14 @@ func bootstrapAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) (b
 		}
 		if name == "nashubs-agent" {
 			exists = true
+		}
+	}
+	if r.LanIP == "" && (!exists || r.Upgrade) {
+		// The app may reach DSM by domain; ask the host network for the LAN IPv4.
+		if out, err := docker("run", "--rm", "--network", "host", r.Image, "lan-ip"); err == nil {
+			if ip := strings.TrimSpace(string(out)); lanIPPattern.MatchString(ip) {
+				r.LanIP = ip
+			}
 		}
 	}
 	result := bootstrapResult{OK: true, Created: !exists}

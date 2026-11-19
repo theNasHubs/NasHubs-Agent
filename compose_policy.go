@@ -63,7 +63,7 @@ func (p composePolicy) check(compose []byte) error {
 			return fmt.Errorf("top-level %q is not allowed", k)
 		}
 		if k == "volumes" || k == "networks" {
-			if err := checkTopLevelResources(k, v); err != nil {
+			if err := p.checkTopLevelResources(k, v); err != nil {
 				return err
 			}
 		}
@@ -90,8 +90,8 @@ func (p composePolicy) checkService(svc map[string]any) error {
 			return fmt.Errorf("%s is not allowed", k)
 		}
 	}
-	if n, _ := svc["container_name"].(string); n == agentContainerName {
-		return fmt.Errorf("container_name %s is reserved", agentContainerName)
+	if n, _ := svc["container_name"].(string); infraContainerNames[n] {
+		return fmt.Errorf("container_name %s is reserved", n)
 	}
 	if v, ok := svc["network_mode"]; ok {
 		// host networking is allowed (tailscale/cloudflared/pihole need it; it is
@@ -266,9 +266,12 @@ func (p composePolicy) checkNoSymlinks(base, rel string) error {
 
 // checkTopLevelResources rejects top-level volumes/networks that could reach
 // the host or other projects: driver options can bind an arbitrary host path
-// (driver_opts: {type: none, o: bind, device: /}), and external/name can attach
-// to existing resources such as the "host" network.
-func checkTopLevelResources(kind string, v any) error {
+// (driver_opts: {type: none, o: bind, device: /}), external can attach to
+// existing resources such as the "host" network, and a fixed `name:` adopts a
+// daemon-global resource — volumes: {v: {name: nashubs-cf-creds}} would mount
+// the real credentials volume, and any other app's named volume is reachable
+// the same way. Non-owners therefore get only project-prefixed auto names.
+func (p composePolicy) checkTopLevelResources(kind string, v any) error {
 	items, ok := v.(map[string]any)
 	if !ok && v != nil {
 		return fmt.Errorf("top-level %s: invalid definition", kind)
@@ -282,13 +285,6 @@ func checkTopLevelResources(kind string, v any) error {
 			switch k {
 			case "labels", "attachable", "internal", "enable_ipv6", "ipam":
 				continue
-			case "name":
-				// A plain volume/network name (e.g. nashubs-cf-creds) is allowed, but
-				// not driver_opts/external/driver, which could bind a host path or
-				// attach to an existing privileged resource.
-				if _, isStr := val.(string); isStr {
-					continue
-				}
 			case "driver":
 				if val == "local" || val == "bridge" {
 					continue

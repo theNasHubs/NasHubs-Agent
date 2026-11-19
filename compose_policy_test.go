@@ -187,18 +187,6 @@ services:
     volumes:
       - /volume1/docker/pihole/etc:/etc/pihole
 `,
-		"cloudflared host-net + named cf-creds volume": `
-services:
-  cf:
-    image: cloudflare/cloudflared
-    user: root
-    network_mode: "host"
-    volumes:
-      - cf-creds:/root/.cloudflared
-volumes:
-  cf-creds:
-    name: nashubs-cf-creds
-`,
 		"immich localtime RO bind": `
 services:
   s:
@@ -263,6 +251,18 @@ func TestComposePolicyFix2StillDenies(t *testing.T) {
 		"named volume driver_opts":   svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    name: x\n    driver_opts: {type: none, o: bind, device: /}\n",
 		"named volume external":      svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    external: true\n",
 		"host net external network":  svc("") + "networks:\n  n:\n    name: host\n    external: true\n",
+		// #28: a fixed `name:` adopts daemon-global resources. cf-creds is the
+		// canonical theft target; the same trick reaches any named volume or
+		// existing network on the host, so non-owners may not set `name:` at all.
+		"cf creds volume steal":  svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    name: nashubs-cf-creds\n",
+		"other app volume steal": svc("    volumes: [\"v:/d\"]\n") + "volumes:\n  v:\n    name: nashubs-jellyfin_data\n",
+		"named network":          svc("    networks: [n]\n") + "networks:\n  n:\n    name: lan\n",
+		// #29: infra container names are reserved from non-owner composes —
+		// claiming one would let `docker rm -f` kill remote access.
+		"infra name cloudflared": svc("    container_name: nashubs-cloudflared\n"),
+		"infra name tailscale":   svc("    container_name: nashubs-tailscale\n"),
+		"infra name cf quick":    svc("    container_name: nashubs-cloudflared-quick\n"),
+		"infra name cf login":    svc("    container_name: nashubs-cloudflared-login\n"),
 	}
 	for name, c := range bad {
 		if err := p.check([]byte(c)); err == nil {

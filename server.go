@@ -123,7 +123,12 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}})
+	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}
+	if s.nginxEnabled() {
+		// The agent and app web paths are published on DSM's own address.
+		caps = append(caps, "dsm-gateway-v1")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": caps})
 }
 
 // requireAuth reads the full request body (needed for the signature's body hash),

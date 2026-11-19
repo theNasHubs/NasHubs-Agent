@@ -99,9 +99,15 @@ type inspectedAgent struct {
 
 // upgradeArgs builds the `docker run` argv for the upgraded agent from the
 // existing container's own configuration (env, binds, published ports).
+// dsmNginxBind gives the agent DSM's nginx conf.d, where it publishes itself
+// (/nashubs-agent/) and every app with a web path on DSM's own ports: remote
+// access always goes through the DSM address. Writes are validated with
+// nginx -t and rolled back on failure (proxy.go).
+const dsmNginxBind = "/etc/nginx/conf.d:/etc/nginx/conf.d"
+
 func upgradeArgs(old inspectedAgent, image, lanIP string) ([]string, error) {
 	args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped"}
-	sawSock := false
+	sawSock, sawNginx := false, false
 	for _, b := range old.HostConfig.Binds {
 		if strings.ContainsAny(b, "\n\r") {
 			return nil, fmt.Errorf("UPGRADE_UNSUPPORTED")
@@ -109,10 +115,18 @@ func upgradeArgs(old inspectedAgent, image, lanIP string) ([]string, error) {
 		if strings.HasPrefix(b, "/var/run/docker.sock:") {
 			sawSock = true
 		}
+		if strings.HasPrefix(b, "/etc/nginx/conf.d:") {
+			sawNginx = true
+		}
 		args = append(args, "-v", b)
 	}
 	if !sawSock {
 		return nil, fmt.Errorf("UPGRADE_UNSUPPORTED")
+	}
+	if !sawNginx {
+		// Agents created by the first DSM installer ran without DSM's nginx;
+		// the upgrade restores the DSM gateway.
+		args = append(args, "-v", dsmNginxBind)
 	}
 	ports := make([]string, 0, len(old.HostConfig.PortBindings))
 	for cport, binds := range old.HostConfig.PortBindings {
@@ -134,6 +148,9 @@ func upgradeArgs(old inspectedAgent, image, lanIP string) ([]string, error) {
 		// is replaced so self-update follows the upgraded line.
 		if k == "PATH" || k == "HOME" || k == "NASHUBS_AGENT_IMAGE" || k == "NASDECK_AGENT_IMAGE" || strings.ContainsAny(e, "\n\r") {
 			continue
+		}
+		if (k == "NASHUBS_NGINX_CONF_DIR" || k == "NASDECK_NGINX_CONF_DIR") && !sawNginx {
+			continue // was "none" from the first DSM installer; the bind above replaces it
 		}
 		args = append(args, "-e", e)
 	}
@@ -234,11 +251,11 @@ func bootstrapAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) (b
 		result.Upgraded = true
 	}
 	if !exists {
-		args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped", "-p", "8443:8443", "-v", "/var/run/docker.sock:/var/run/docker.sock"}
+		args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped", "-p", "8443:8443", "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", dsmNginxBind}
 		for _, v := range r.Volumes {
 			args = append(args, "-v", v+":"+v)
 		}
-		for _, env := range []string{"NASHUBS_NGINX_CONF_DIR=none", "NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir,
+		for _, env := range []string{"NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir,
 			"NASHUBS_AGENT_IMAGE=" + r.Image, "NASHUBS_TRUSTED_PUBKEY=" + r.KeyID, "NASHUBS_PAIRING_SECRET=" + r.Secret} {
 			args = append(args, "-e", env)
 		}

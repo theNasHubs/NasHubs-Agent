@@ -57,13 +57,16 @@ func TestBootstrapCreatesAgentWithPersistentSamePathVolumesAndLiveOwnerEnrollmen
 			run = c
 		}
 	}
-	for _, value := range []string{"/volume1:/volume1", "/volume2:/volume2", "NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir, "NASHUBS_NGINX_CONF_DIR=none", "8443:8443"} {
+	for _, value := range []string{"/volume1:/volume1", "/volume2:/volume2", "NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir, "8443:8443", "/etc/nginx/conf.d:/etc/nginx/conf.d"} {
 		if !strings.Contains(strings.Join(run, " "), value) {
 			t.Errorf("missing %s", value)
 		}
 	}
 	if run[len(run)-1] != r.Image {
 		t.Fatal("wrong image")
+	}
+	if strings.Contains(strings.Join(run, " "), "NGINX_CONF_DIR=none") {
+		t.Fatal("the DSM gateway must not be disabled")
 	}
 	if !reflect.DeepEqual(calls[len(calls)-1], []string{"exec", "nashubs-agent", "nashubs-agent", "invite", "--role", "owner"}) {
 		t.Fatal(calls)
@@ -128,5 +131,24 @@ func TestBootstrapDoesNotDeleteAnythingAfterDaemonFailure(t *testing.T) {
 	}, func() {})
 	if err == nil || err.Error() != "CREATE_FAILED" {
 		t.Fatal(err)
+	}
+}
+
+func TestUpgradeRestoresDSMNginxForFirstInstallerAgents(t *testing.T) {
+	old := inspectedAgent{}
+	old.Config.Image = "ghcr.io/thenashubs/nashubs-agent:sha-old"
+	old.Config.Env = []string{"NASHUBS_NGINX_CONF_DIR=none", "NASHUBS_DATA_DIR=/volume1/docker/nashubs-agent/data"}
+	old.HostConfig.Binds = []string{"/var/run/docker.sock:/var/run/docker.sock", "/volume1:/volume1"}
+	args, err := upgradeArgs(old, "ghcr.io/thenashubs/nashubs-agent:sha-new", "")
+	joined := strings.Join(args, " ")
+	if err != nil || !strings.Contains(joined, "-v "+dsmNginxBind) || strings.Contains(joined, "NGINX_CONF_DIR") || !strings.Contains(joined, "NASHUBS_DATA_DIR=/volume1/docker/nashubs-agent/data") {
+		t.Fatalf("%v %v", args, err)
+	}
+	// An agent that already has the bind keeps its own nginx setting untouched.
+	old.HostConfig.Binds = append(old.HostConfig.Binds, dsmNginxBind)
+	old.Config.Env = []string{"NASHUBS_NGINX_CONF_DIR=/etc/nginx/conf.d"}
+	args, _ = upgradeArgs(old, "x", "")
+	if n := strings.Count(strings.Join(args, " "), dsmNginxBind); n != 1 || !strings.Contains(strings.Join(args, " "), "NASHUBS_NGINX_CONF_DIR=/etc/nginx/conf.d") {
+		t.Fatal(args)
 	}
 }

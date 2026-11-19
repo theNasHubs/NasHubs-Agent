@@ -40,6 +40,13 @@ lives at `/nashubs-agent/` and each app with a `webPath` at its own prefix
 DSM address reachable from outside; they do not publish the agent or apps
 separately. `remoteURL` in `/remote-status` is that prefix.
 
+The DSM installer therefore mounts DSM's `/etc/nginx/conf.d` into the agent
+(the first installer ran it with `NASHUBS_NGINX_CONF_DIR=none`, which left new
+agents without `/nashubs-agent/` and without app paths). Upgrading such an agent
+adds the mount and drops that variable; existing `dsm.nashubs-*.conf` files are
+picked up again. `/ping` advertises `dsm-gateway-v1` when the gateway is managed,
+so the app can offer the upgrade.
+
 ## Tailscale
 
 Tailscale runs as the `tailscale` mini-app (`nashubs-tailscale`, host network).

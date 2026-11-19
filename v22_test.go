@@ -361,3 +361,14 @@ func TestPickLanIPv4SkipsBridgesAndTailnet(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestPingAdvertisesDSMGatewayOnlyWithNginx(t *testing.T) {
+	for _, dir := range []string{"", "/etc/nginx/conf.d"} {
+		s := &server{cfg: Config{NginxConfDir: dir}}
+		rec := httptest.NewRecorder()
+		s.handlePing(rec, httptest.NewRequest("GET", "/ping", nil))
+		if got := strings.Contains(rec.Body.String(), "dsm-gateway-v1"); got != (dir != "") {
+			t.Fatalf("dir=%q body=%s", dir, rec.Body)
+		}
+	}
+}

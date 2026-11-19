@@ -76,7 +76,6 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleViewer, s.handleResources)))
 	mux.HandleFunc("GET /shares", s.requireAuth(s.requireRole(RoleViewer, s.handleListShares)))
 	mux.HandleFunc("GET /remote/tailscale", s.requireAuth(s.requireRole(RoleAdmin, s.handleTailscaleStatus)))
-	mux.HandleFunc("GET /remote/funnel", s.requireAuth(s.requireRole(RoleViewer, s.handleFunnelStatus)))
 
 	// Mutating routes (admin and above).
 	mux.HandleFunc("POST /deploy", s.requireAuth(s.requireRole(RoleAdmin, s.handleDeploy)))
@@ -88,7 +87,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /apps/jellyfin/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleJellyfinSetup)))
 	mux.HandleFunc("POST /apps/immich/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleImmichSetup)))
 	// Public access to the agent is an owner decision.
-	mux.HandleFunc("POST /remote/funnel", s.requireAuth(s.requireRole(RoleOwner, s.handleFunnel)))
+	mux.HandleFunc("POST /remote/tailscale/relogin", s.requireAuth(s.requireRole(RoleOwner, s.handleTailscaleRelogin)))
 	// Typed self-update replaces the removed generic /exec.
 	mux.HandleFunc("POST /agent/update", s.requireAuth(s.requireRole(RoleAdmin, s.handleAgentUpdate)))
 
@@ -124,7 +123,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "funnel-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}})
 }
 
 // requireAuth reads the full request body (needed for the signature's body hash),

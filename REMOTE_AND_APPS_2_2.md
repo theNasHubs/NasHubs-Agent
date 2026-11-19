@@ -31,23 +31,29 @@ Jellyfin/Immich show `/volume1/video` exactly as DSM does.
 container-internal address is never reported. Tailscale status is parsed from
 JSON (`Self.TailscaleIPs`, `Self.DNSName`, `BackendState`).
 
-## Tailscale and Funnel
+## Remote access goes through DSM
+
+Every route to the NAS goes through the DSM address the app already uses
+(LAN IP, domain, QuickConnect, Tailscale or a Cloudflare hostname): the agent
+lives at `/nashubs-agent/` and each app with a `webPath` at its own prefix
+(`/jellyfin/`, …) on DSM's nginx. Tailscale and Cloudflare Tunnel only make the
+DSM address reachable from outside; they do not publish the agent or apps
+separately. `remoteURL` in `/remote-status` is that prefix.
+
+## Tailscale
 
 Tailscale runs as the `tailscale` mini-app (`nashubs-tailscale`, host network).
+Phones reach DSM over the tailnet with the Tailscale app, signed in to the
+same tailnet as the NAS.
 
-- `GET /remote/tailscale` (admin): login state, tailnet IP and MagicDNS name;
-  while logged out an `authURL` (`https://login.tailscale.com/a/…`) the app
-  opens — no auth key is stored in the compose file.
-- `GET /remote/funnel` (viewer) / `POST /remote/funnel {"enable":bool}` (owner):
-  publishes only the agent at `https://<magicdns>:10000` →
-  `https+insecure://localhost:<agent port>`. Every request through it is still
-  Ed25519-signed and role-checked; unauthenticated callers only reach `/ping`
-  and invitation redemption. If Funnel is not allowed in the tailnet the
-  response is `FUNNEL_NOT_ALLOWED` with the admin-console link.
-
-Phones need no Tailscale app for agent access through Funnel. Through Funnel
-the TLS certificate is the tailnet's public certificate; clients verify the
-backend agent identity (`agentId` from `/ping`) against the pinned fingerprint.
+- `GET /remote/tailscale` (admin): login state, tailnet IP, MagicDNS name,
+  `tailnet` and `loginName` (the account the NAS is signed in with), so the
+  app can show which account phones must use. While logged out the owner also
+  receives an `authURL` (`https://login.tailscale.com/a/…`); whoever opens it
+  decides the tailnet, so admins and viewers never get it. No auth key is
+  stored in the compose file.
+- `POST /remote/tailscale/relogin` (owner): `tailscale logout`, then returns a
+  fresh `authURL` to move the NAS to another account.
 
 ## Cloudflare
 

@@ -46,7 +46,7 @@ type tunnelStatus struct {
 	TunnelID     string `json:"tunnelId,omitempty"`
 	DNSName      string `json:"dnsName,omitempty"`      // tailscale MagicDNS name
 	BackendState string `json:"backendState,omitempty"` // tailscale: Running / NeedsLogin / ...
-	FunnelURL    string `json:"funnelURL,omitempty"`    // public URL of the agent via Tailscale Funnel
+	Tailnet      string `json:"tailnet,omitempty"`      // tailscale: tailnet the NAS is signed in to
 }
 
 type networkInfo struct {
@@ -336,9 +336,7 @@ func (s *server) probeTailscale() *tunnelStatus {
 			ts.Hostname = info.HostName
 			ts.DNSName = info.DNSName
 			ts.BackendState = info.BackendState
-			if f := s.currentFunnel(info); f.Enabled {
-				ts.FunnelURL = f.URL
-			}
+			ts.Tailnet = info.Tailnet
 		}
 	}
 	return ts

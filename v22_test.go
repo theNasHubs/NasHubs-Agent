@@ -84,55 +84,72 @@ func TestParseTailscaleStatus(t *testing.T) {
 	}
 }
 
-func fakeTailscale(funnelOn bool, enableOut string, enableErr error, calls *[][]string) func(...string) ([]byte, error) {
+func fakeTailscale(loggedIn *bool, calls *[][]string) func(...string) ([]byte, error) {
 	return func(args ...string) ([]byte, error) {
 		*calls = append(*calls, args)
 		joined := strings.Join(args, " ")
 		switch {
-		case strings.Contains(joined, "status --json") && strings.Contains(joined, "funnel"):
-			if funnelOn {
-				return []byte(`{"AllowFunnel":{"nas.tail.ts.net:10000":true}}`), nil
-			}
-			return []byte(`{}`), nil
+		case strings.Contains(joined, "status --json") && *loggedIn:
+			return []byte(`{"BackendState":"Running","Self":{"DNSName":"nas.tail.ts.net.","TailscaleIPs":["100.64.1.2"],"UserID":42},"CurrentTailnet":{"Name":"duc@example.com"},"User":{"42":{"LoginName":"duc@example.com"}}}`), nil
 		case strings.Contains(joined, "status --json"):
-			return []byte(`{"BackendState":"Running","Self":{"DNSName":"nas.tail.ts.net.","TailscaleIPs":["100.64.1.2"]}}`), nil
-		case strings.Contains(joined, "funnel --bg"):
-			return []byte(enableOut), enableErr
-		case strings.Contains(joined, "funnel --https=10000 off"):
+			return []byte(`{"BackendState":"NeedsLogin","Self":{}}`), errors.New("exit 1")
+		case strings.Contains(joined, "tailscale logout"):
+			*loggedIn = false
 			return nil, nil
+		case strings.Contains(joined, "tailscale up"):
+			return []byte("To authenticate, visit:\n\n\thttps://login.tailscale.com/a/fresh42\n"), errors.New("timeout")
 		}
 		return nil, errors.New("unexpected " + joined)
 	}
 }
 
-func TestFunnelEnableTargetsOnlyTheAgent(t *testing.T) {
+func TestTailscaleStatusReportsTailnetAccount(t *testing.T) {
 	var calls [][]string
-	s := &server{cfg: Config{Port: "8443"}, runCmd: fakeTailscale(false, "", nil, &calls)}
-	req := httptest.NewRequest("POST", "/remote/funnel", strings.NewReader(`{"enable":true}`))
+	on := true
+	s := &server{runCmd: fakeTailscale(&on, &calls)}
 	rec := httptest.NewRecorder()
-	s.handleFunnel(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "https://nas.tail.ts.net:10000") {
-		t.Fatalf("%d %s", rec.Code, rec.Body)
-	}
-	var found bool
-	for _, c := range calls {
-		if reflect.DeepEqual(c, []string{"exec", "nashubs-tailscale", "tailscale", "funnel", "--bg", "--yes", "--https=10000", "https+insecure://localhost:8443"}) {
-			found = true
+	s.handleTailscaleStatus(rec, httptest.NewRequest("GET", "/remote/tailscale", nil).WithContext(withAuth(context.Background(), RoleAdmin)))
+	body := rec.Body.String()
+	for _, want := range []string{`"tailnet":"duc@example.com"`, `"loginName":"duc@example.com"`, `"ip":"100.64.1.2"`, `"dnsName":"nas.tail.ts.net"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s in %s", want, body)
 		}
-	}
-	if !found {
-		t.Fatal(calls)
 	}
 }
 
-func TestFunnelNotAllowedReturnsAdminLink(t *testing.T) {
+func TestTailscaleLoginURLOnlyForOwner(t *testing.T) {
+	for _, tc := range []struct {
+		role Role
+		want bool
+	}{{RoleAdmin, false}, {RoleOwner, true}} {
+		var calls [][]string
+		on := false
+		s := &server{runCmd: fakeTailscale(&on, &calls)}
+		rec := httptest.NewRecorder()
+		s.handleTailscaleStatus(rec, httptest.NewRequest("GET", "/remote/tailscale", nil).WithContext(withAuth(context.Background(), tc.role)))
+		if got := strings.Contains(rec.Body.String(), "login.tailscale.com/a/fresh42"); got != tc.want {
+			t.Fatalf("role %s: authURL present=%v body=%s", tc.role, got, rec.Body)
+		}
+	}
+}
+
+func TestTailscaleReloginLogsOutAndReturnsNewURL(t *testing.T) {
 	var calls [][]string
-	out := "Funnel is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/funnel?node=nXyZ123\n"
-	s := &server{cfg: Config{Port: "8443"}, runCmd: fakeTailscale(false, out, errors.New("exit 1"), &calls)}
+	on := true
+	s := &server{runCmd: fakeTailscale(&on, &calls)}
 	rec := httptest.NewRecorder()
-	s.handleFunnel(rec, httptest.NewRequest("POST", "/remote/funnel", strings.NewReader(`{"enable":true}`)))
-	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "FUNNEL_NOT_ALLOWED") || !strings.Contains(rec.Body.String(), "node=nXyZ123") {
+	s.handleTailscaleRelogin(rec, httptest.NewRequest("POST", "/remote/tailscale/relogin", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "https://login.tailscale.com/a/fresh42") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var loggedOut bool
+	for _, c := range calls {
+		if reflect.DeepEqual(c, []string{"exec", "nashubs-tailscale", "tailscale", "logout"}) {
+			loggedOut = true
+		}
+	}
+	if !loggedOut {
+		t.Fatal(calls)
 	}
 }
 

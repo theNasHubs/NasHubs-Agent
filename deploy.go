@@ -26,6 +26,9 @@ var idSafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // container is removed (not stopped) its restart policy never brings it back.
 var reservedAppIDs = map[string]bool{"agent": true}
 
+// unrenderedPlaceholder matches a catalog variable the app forgot to render.
+var unrenderedPlaceholder = regexp.MustCompile(`\{\{[A-Z][A-Z0-9_]*\}\}`)
+
 // agentContainerName is the agent's own container. No deploy may ever name a
 // service this, nor rm it, or the deploy would kill the control plane.
 const agentContainerName = "nashubs-agent"
@@ -62,6 +65,19 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validAppID(req.ID) || req.Compose == "" {
 		writeJSON(w, http.StatusBadRequest, errMap("invalid id or empty compose", nil))
+		return
+	}
+	// {{APP_DIR}} is the only placeholder the agent renders: the app's own
+	// directory inside the NAS docker share (one sub-directory per mini-app).
+	if strings.Contains(req.Compose, "{{APP_DIR}}") {
+		if s.cfg.AppsDir == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "APPS_DIR_UNKNOWN"})
+			return
+		}
+		req.Compose = strings.ReplaceAll(req.Compose, "{{APP_DIR}}", filepath.Join(s.cfg.AppsDir, req.ID))
+	}
+	if unrenderedPlaceholder.MatchString(req.Compose) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "UNRENDERED_PLACEHOLDER"})
 		return
 	}
 	// No service may claim the agent's own container name (any role): a later

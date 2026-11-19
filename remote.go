@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // remoteStatus is the response for GET /remote-status.
@@ -34,29 +39,44 @@ type tunnelStatuses struct {
 }
 
 type tunnelStatus struct {
-	Deployed bool   `json:"deployed"`
-	State    string `json:"state"` // up / down / missing / unknown
-	Hostname string `json:"hostname,omitempty"`
-	IP       string `json:"ip,omitempty"`
-	TunnelID string `json:"tunnelId,omitempty"`
+	Deployed     bool   `json:"deployed"`
+	State        string `json:"state"` // up / down / missing / unknown
+	Hostname     string `json:"hostname,omitempty"`
+	IP           string `json:"ip,omitempty"`
+	TunnelID     string `json:"tunnelId,omitempty"`
+	DNSName      string `json:"dnsName,omitempty"`      // tailscale MagicDNS name
+	BackendState string `json:"backendState,omitempty"` // tailscale: Running / NeedsLogin / ...
+	FunnelURL    string `json:"funnelURL,omitempty"`    // public URL of the agent via Tailscale Funnel
 }
 
 type networkInfo struct {
-	LanIP      string `json:"lanIP"`
-	DsmPort    string `json:"dsmPort"`
+	LanIP       string `json:"lanIP"`
+	DsmPort     string `json:"dsmPort"`
 	AgentDirect string `json:"agentDirect"`
 	AgentProxy  string `json:"agentProxy"`
 }
 
 type appAccessInfo struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"` // same as id for now
-	InternalPort int    `json:"internalPort,omitempty"`
-	PathPrefix   string `json:"pathPrefix,omitempty"`
-	State        string `json:"state"` // up/down/missing/unknown
-	HasProxy     bool   `json:"hasProxy"`
-	LanURL       string `json:"lanURL,omitempty"`
-	RemoteURL    string `json:"remoteURL,omitempty"` // via reverse proxy path
+	ID           string      `json:"id"`
+	Name         string      `json:"name"` // same as id for now
+	InternalPort int         `json:"internalPort,omitempty"`
+	PathPrefix   string      `json:"pathPrefix,omitempty"`
+	State        string      `json:"state"` // up/down/missing/unknown
+	HasProxy     bool        `json:"hasProxy"`
+	LanURL       string      `json:"lanURL,omitempty"`
+	RemoteURL    string      `json:"remoteURL,omitempty"`    // via reverse proxy path
+	TailscaleURL string      `json:"tailscaleURL,omitempty"` // http://<tailnet IP>:<port>
+	PublicURL    string      `json:"publicURL,omitempty"`    // Cloudflare hostname routed to this port
+	AppDir       string      `json:"appDir,omitempty"`       // NAS folder that holds this app's data
+	Mounts       []mountInfo `json:"mounts,omitempty"`       // NAS path ↔ container path
+}
+
+// mountInfo is one bind mount of a deployed app, for the "access info" screen.
+type mountInfo struct {
+	Service   string `json:"service"`
+	Host      string `json:"host"`
+	Container string `json:"container"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
 }
 
 // processStartTime records when the agent started for uptime calculation.
@@ -66,7 +86,7 @@ var processStartTime = time.Now()
 // access configuration: agent info, tunnel services, proxy rules, and
 // per-app accessibility.
 func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
-	lanIP := detectLanIP()
+	lanIP := s.lanIP(r)
 
 	resp := remoteStatus{
 		OK: true,
@@ -76,16 +96,25 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 			Port:    s.cfg.Port,
 		},
 		Network: networkInfo{
-			LanIP:       lanIP,
-			DsmPort:     "5001", // standard DSM HTTPS port
-			AgentDirect: fmt.Sprintf("https://%s:%s", lanIP, s.cfg.Port),
-			AgentProxy:  "/nashubs-agent/",
+			LanIP:      lanIP,
+			DsmPort:    "5001", // standard DSM HTTPS port
+			AgentProxy: "/nashubs-agent/",
 		},
+	}
+
+	if lanIP != "" {
+		resp.Network.AgentDirect = fmt.Sprintf("https://%s:%s", lanIP, s.cfg.Port)
 	}
 
 	// --- Tunnel statuses ---
 	resp.Tunnels.Tailscale = s.probeTailscale()
 	resp.Tunnels.Cloudflare = s.probeCloudflare()
+	publicByPort := map[int]string{}
+	if resp.Tunnels.Cloudflare.Deployed {
+		if rules, err := s.readCloudflareIngress(); err == nil {
+			publicByPort = publicHostsByPort(rules)
+		}
+	}
 
 	// --- Proxies (from nginx conf.d scan) ---
 	resp.Proxies = s.listProxyEntries()
@@ -113,11 +142,8 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 
 			st, err := loadState(s.cfg.DataDir, id)
 			if err != nil {
-				resp.Apps = append(resp.Apps, appAccessInfo{
-					ID:    id,
-					Name:  id,
-					State: stUnknown,
-				})
+				// Not an agent deployment (a legacy data dir may be the shared
+				// docker folder itself, full of the user's own folders).
 				continue
 			}
 
@@ -131,8 +157,20 @@ func (s *server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if st.InternalPort > 0 {
-				app.LanURL = fmt.Sprintf("http://%s:%d", lanIP, st.InternalPort)
+				if lanIP != "" {
+					app.LanURL = fmt.Sprintf("http://%s:%d", lanIP, st.InternalPort)
+				}
+				if ts := resp.Tunnels.Tailscale; ts != nil && ts.IP != "" && ts.BackendState == "Running" {
+					app.TailscaleURL = fmt.Sprintf("http://%s:%d", ts.IP, st.InternalPort)
+				}
+				if h := publicByPort[st.InternalPort]; h != "" {
+					app.PublicURL = "https://" + h
+				}
 			}
+			if s.cfg.AppsDir != "" {
+				app.AppDir = s.cfg.AppsDir + "/" + id
+			}
+			app.Mounts = s.appMounts(id, st.Current)
 
 			if p, ok := proxyMap[id]; ok {
 				app.HasProxy = true
@@ -292,27 +330,14 @@ func (s *server) probeTailscale() *tunnelStatus {
 	}
 	state := s.probeState("tailscale", st.HostPath)
 	ts := &tunnelStatus{Deployed: true, State: state}
-
 	if state == stUp {
-		// Try to get tailscale status from the running container
-		cmd := exec.Command("docker", "exec", "nashubs-tailscale", "tailscale", "status", "--json")
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			// Extract IP and hostname from JSON output (lightweight parsing)
-			outStr := string(out)
-			if ip := extractJSONString(outStr, "TailscaleIPs"); ip != "" {
-				ts.IP = ip
-			}
-			// Try Self.HostName
-			if hn := extractJSONString(outStr, "Self"); hn != "" {
-				ts.Hostname = hn
-			}
-		}
-		// Fallback: try `tailscale ip -4`
-		if ts.IP == "" {
-			cmd2 := exec.Command("docker", "exec", "nashubs-tailscale", "tailscale", "ip", "-4")
-			if out2, err := cmd2.CombinedOutput(); err == nil {
-				ts.IP = strings.TrimSpace(string(out2))
+		if info, err := s.tailscaleStatus(); err == nil {
+			ts.IP = info.IPv4
+			ts.Hostname = info.HostName
+			ts.DNSName = info.DNSName
+			ts.BackendState = info.BackendState
+			if f := s.currentFunnel(info); f.Enabled {
+				ts.FunnelURL = f.URL
 			}
 		}
 	}
@@ -371,40 +396,109 @@ func (s *server) listProxyEntries() []proxyEntry {
 
 // --- Network helpers ---
 
-// detectLanIP returns the first non-loopback IPv4 address on the host.
-func detectLanIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "0.0.0.0"
+// lanIP returns the NAS LAN address to show to clients. The agent runs in a
+// Docker bridge network, so its own interfaces only show the container
+// address (172.17.x.x). Prefer the explicit NASHUBS_LAN_IP, then the private
+// IPv4 the client used to reach us (Host header), and report nothing rather
+// than a container-internal address.
+func (s *server) lanIP(r *http.Request) string {
+	if ip := net.ParseIP(s.cfg.LanIP); ip != nil && ip.To4() != nil {
+		return ip.String()
 	}
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			if ipNet.IP.To4() != nil {
-				return ipNet.IP.String()
+	if r != nil {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if ip := net.ParseIP(host); ip != nil && isLanIPv4(ip) {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+var _, cgnatNet, _ = net.ParseCIDR("100.64.0.0/10") // tailnet addresses
+
+// isLanIPv4 reports a private IPv4 that is not a tailnet address. An address
+// the client actually reached us on is routable from the client, so Docker-
+// looking ranges (172.16/12) are kept: some home LANs use them too.
+func isLanIPv4(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4.IsPrivate() && !cgnatNet.Contains(v4)
+}
+
+// appMounts lists the bind mounts of the app's current compose artifact so the
+// app can show which NAS folder appears at which path inside the container.
+func (s *server) appMounts(id, version string) []mountInfo {
+	if !idSafe.MatchString(id) || !versionDirName.MatchString(version) {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(s.cfg.DataDir, id, version, "docker-compose.yml"))
+	if err != nil {
+		return nil
+	}
+	return composeMounts(data)
+}
+
+func composeMounts(data []byte) []mountInfo {
+	var doc struct {
+		Services map[string]struct {
+			Volumes []any `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(doc.Services))
+	for n := range doc.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var out []mountInfo
+	for _, n := range names {
+		for _, v := range doc.Services[n].Volumes {
+			switch v := v.(type) {
+			case string:
+				f := strings.Split(v, ":")
+				if len(f) >= 2 && strings.HasPrefix(f[0], "/") {
+					out = append(out, mountInfo{Service: n, Host: f[0], Container: f[1], ReadOnly: volumeIsRO(f[2:])})
+				}
+			case map[string]any:
+				if t, _ := v["type"].(string); t == "bind" {
+					src, _ := v["source"].(string)
+					dst, _ := v["target"].(string)
+					ro, _ := v["read_only"].(bool)
+					if strings.HasPrefix(src, "/") {
+						out = append(out, mountInfo{Service: n, Host: src, Container: dst, ReadOnly: ro})
+					}
+				}
 			}
 		}
 	}
-	return "0.0.0.0"
+	return out
 }
 
-// extractJSONString does a quick substring search for a JSON key and returns
-// the first string-like value after it. Not a full JSON parser — just enough
-// for grabbing an IP or hostname from tailscale status output.
-func extractJSONString(json, key string) string {
-	idx := strings.Index(json, `"`+key+`"`)
-	if idx < 0 {
-		return ""
+// publicHostsByPort maps a local port to the Cloudflare hostname routed to it
+// (service http(s)://localhost:<port> or 127.0.0.1:<port>).
+func publicHostsByPort(rules []ingressRule) map[int]string {
+	out := map[int]string{}
+	for _, r := range rules {
+		if r.Hostname == "" {
+			continue
+		}
+		u, err := url.Parse(r.Service)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			continue
+		}
+		h := u.Hostname()
+		if h != "localhost" && h != "127.0.0.1" {
+			continue
+		}
+		if p, err := strconv.Atoi(u.Port()); err == nil {
+			if _, dup := out[p]; !dup {
+				out[p] = r.Hostname
+			}
+		}
 	}
-	rest := json[idx+len(key)+3:]
-	// Find the next quoted string value
-	start := strings.IndexByte(rest, '"')
-	if start < 0 {
-		return ""
-	}
-	rest = rest[start+1:]
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
+	return out
 }

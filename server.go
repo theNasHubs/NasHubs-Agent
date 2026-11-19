@@ -20,7 +20,13 @@ type server struct {
 	certFingerprint string
 	composeArgs     []string // ["docker","compose"] (v2) or ["docker-compose"] (v1, DSM 7.0 "Docker" pkg)
 
-	devices     *deviceStore
+	devices *deviceStore
+
+	// Test seams (nil/empty in production): filesystem root for /shares,
+	// docker command runner and the HTTP client used for app setup.
+	fsRoot      string
+	runCmd      func(args ...string) ([]byte, error)
+	httpc       *http.Client
 	startedAt   time.Time    // for the pairing TTL window
 	pairLimiter *rateLimiter // throttles /pair attempts per client IP
 	reqLimiter  *rateLimiter // throttles ALL signed requests per client IP (DoS guard)
@@ -68,6 +74,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
 	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleViewer, s.handleListVolumes)))
 	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleViewer, s.handleResources)))
+	mux.HandleFunc("GET /shares", s.requireAuth(s.requireRole(RoleViewer, s.handleListShares)))
+	mux.HandleFunc("GET /remote/tailscale", s.requireAuth(s.requireRole(RoleAdmin, s.handleTailscaleStatus)))
+	mux.HandleFunc("GET /remote/funnel", s.requireAuth(s.requireRole(RoleViewer, s.handleFunnelStatus)))
 
 	// Mutating routes (admin and above).
 	mux.HandleFunc("POST /deploy", s.requireAuth(s.requireRole(RoleAdmin, s.handleDeploy)))
@@ -76,6 +85,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /proxy", s.requireAuth(s.requireRole(RoleAdmin, s.handleProxy)))
 	mux.HandleFunc("POST /configure-proxy", s.requireAuth(s.requireRole(RoleAdmin, s.handleConfigureAllProxies)))
 	mux.HandleFunc("POST /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleConfigureCloudflare)))
+	mux.HandleFunc("POST /apps/jellyfin/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleJellyfinSetup)))
+	mux.HandleFunc("POST /apps/immich/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleImmichSetup)))
+	// Public access to the agent is an owner decision.
+	mux.HandleFunc("POST /remote/funnel", s.requireAuth(s.requireRole(RoleOwner, s.handleFunnel)))
 	// Typed self-update replaces the removed generic /exec.
 	mux.HandleFunc("POST /agent/update", s.requireAuth(s.requireRole(RoleAdmin, s.handleAgentUpdate)))
 
@@ -111,7 +124,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1"}})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "agentId": s.certFingerprint, "capabilities": []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "funnel-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}})
 }
 
 // requireAuth reads the full request body (needed for the signature's body hash),

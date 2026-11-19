@@ -42,6 +42,76 @@ type ingressRule struct {
 type configureCloudflareReq struct {
 	TunnelName string        `json:"tunnelName"`
 	Ingress    []ingressRule `json:"ingress"`
+	// Mode "merge" adds/updates the given rules (by hostname) and drops the
+	// hostnames in Remove, keeping every other existing rule. The default
+	// ("replace", for older apps) writes exactly the given rules.
+	Mode   string   `json:"mode,omitempty"`
+	Remove []string `json:"remove,omitempty"`
+}
+
+// mergeIngress applies upserts and removals to the existing rules, keyed by
+// hostname, preserving order (catch-all rules without hostname are dropped;
+// the writer re-adds the single http_status:404 catch-all).
+func mergeIngress(existing, upserts []ingressRule, remove []string) []ingressRule {
+	drop := map[string]bool{}
+	for _, h := range remove {
+		drop[strings.ToLower(h)] = true
+	}
+	idx := map[string]int{}
+	var out []ingressRule
+	for _, r := range existing {
+		k := strings.ToLower(r.Hostname)
+		if r.Hostname == "" || drop[k] {
+			continue
+		}
+		if i, ok := idx[k]; ok {
+			out[i] = r
+			continue
+		}
+		idx[k] = len(out)
+		out = append(out, r)
+	}
+	for _, r := range upserts {
+		k := strings.ToLower(r.Hostname)
+		if drop[k] {
+			continue
+		}
+		if i, ok := idx[k]; ok {
+			out[i] = r
+			continue
+		}
+		idx[k] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// readCloudflareIngress parses the tunnel's config.yml (hostname rules only).
+func (s *server) readCloudflareIngress() ([]ingressRule, error) {
+	out, err := s.docker("run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", helperImage, "cat", "/root/.cloudflared/config.yml")
+	if err != nil {
+		return nil, err
+	}
+	return parseCloudflareConfig(out)
+}
+
+func parseCloudflareConfig(data []byte) ([]ingressRule, error) {
+	var cfg struct {
+		Ingress []struct {
+			Hostname string `yaml:"hostname"`
+			Service  string `yaml:"service"`
+		} `yaml:"ingress"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	var rules []ingressRule
+	for _, r := range cfg.Ingress {
+		if r.Hostname != "" {
+			rules = append(rules, ingressRule{Hostname: r.Hostname, Service: r.Service})
+		}
+	}
+	return rules, nil
 }
 
 func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +121,21 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if req.Mode != "" && req.Mode != "replace" && req.Mode != "merge" {
+		writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("mode must be replace or merge")))
+		return
+	}
+	for _, h := range req.Remove {
+		if !hostnameRe.MatchString(h) {
+			writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("invalid hostname %q", h)))
+			return
+		}
+	}
+	newRules := req.Ingress
+	if req.Mode == "merge" {
+		existing, _ := s.readCloudflareIngress() // no config yet = no rules
+		req.Ingress = mergeIngress(existing, req.Ingress, req.Remove)
+	}
 	if req.TunnelName == "" {
 		writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("tunnelName is required")))
 		return
@@ -123,7 +208,10 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	for _, rule := range req.Ingress {
+	for _, rule := range newRules {
+		if rule.Hostname == "" {
+			continue
+		}
 		routeCmd := exec.Command("docker", "run", "--rm", "--user", "root", "-v", "nashubs-cf-creds:/root/.cloudflared", cloudflaredImage, "tunnel", "route", "dns", "-f", uuid, rule.Hostname)
 		outRoute, errRoute := routeCmd.CombinedOutput()
 		if errRoute != nil {
@@ -146,37 +234,18 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *server) handleGetCloudflare(w http.ResponseWriter, r *http.Request) {
-	out, err := exec.Command("docker", "run", "--rm", "-v", "nashubs-cf-creds:/root/.cloudflared", helperImage, "cat", "/root/.cloudflared/config.yml").CombinedOutput()
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"ingress": []ingressRule{},
-		})
-		return
+	rules, err := s.readCloudflareIngress()
+	if err != nil || rules == nil {
+		rules = []ingressRule{}
 	}
-
-	lines := strings.Split(string(out), "\n")
-	var rules []ingressRule
-	var currentRule *ingressRule
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- hostname:") {
-			if currentRule != nil && currentRule.Hostname != "" {
-				rules = append(rules, *currentRule)
-			}
-			currentRule = &ingressRule{Hostname: strings.TrimSpace(strings.TrimPrefix(line, "- hostname:"))}
-		} else if strings.HasPrefix(line, "service:") && currentRule != nil {
-			currentRule.Service = strings.TrimSpace(strings.TrimPrefix(line, "service:"))
-			if currentRule.Service != "http_status:404" {
-				rules = append(rules, *currentRule)
-			}
-			currentRule = nil
+	var out []ingressRule
+	for _, r := range rules {
+		if r.Service != "http_status:404" {
+			out = append(out, r)
 		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"ingress": rules,
-	})
+	if out == nil {
+		out = []ingressRule{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ingress": out})
 }

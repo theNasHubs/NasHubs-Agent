@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -22,10 +23,18 @@ type bootstrapRequest struct {
 	Image   string   `json:"image"`
 	DataDir string   `json:"dataDir"`
 	Volumes []string `json:"volumes"`
+	// Upgrade (explicit user consent) recreates an existing nashubs-agent that
+	// runs a different image, keeping its env, mounts and ports so devices,
+	// TLS identity and deployments survive. Without it an existing agent is
+	// never touched.
+	Upgrade bool `json:"upgrade,omitempty"`
+	// LanIP is the NAS LAN address the app used for DSM (reported to clients).
+	LanIP string `json:"lanIP,omitempty"`
 }
 type bootstrapResult struct {
 	OK          bool   `json:"ok"`
 	Created     bool   `json:"created"`
+	Upgraded    bool   `json:"upgraded,omitempty"`
 	Certificate string `json:"certFingerprint,omitempty"`
 	Invitation  string `json:"invitationCode,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -65,7 +74,117 @@ func (r bootstrapRequest) validate() error {
 	if !dataOK {
 		return fmt.Errorf("INVALID_DATA_DIR")
 	}
+	if r.LanIP != "" && !lanIPPattern.MatchString(r.LanIP) {
+		return fmt.Errorf("INVALID_BOOTSTRAP")
+	}
 	return nil
+}
+
+var lanIPPattern = regexp.MustCompile(`^(10|172|192)\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
+
+// inspectedAgent is the subset of `docker inspect nashubs-agent` the upgrade keeps.
+type inspectedAgent struct {
+	Config struct {
+		Image string   `json:"Image"`
+		Env   []string `json:"Env"`
+	} `json:"Config"`
+	HostConfig struct {
+		Binds        []string `json:"Binds"`
+		PortBindings map[string][]struct {
+			HostIP   string `json:"HostIp"`
+			HostPort string `json:"HostPort"`
+		} `json:"PortBindings"`
+	} `json:"HostConfig"`
+}
+
+// upgradeArgs builds the `docker run` argv for the upgraded agent from the
+// existing container's own configuration (env, binds, published ports).
+func upgradeArgs(old inspectedAgent, image string) ([]string, error) {
+	args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped"}
+	sawSock := false
+	for _, b := range old.HostConfig.Binds {
+		if strings.ContainsAny(b, "\n\r") {
+			return nil, fmt.Errorf("UPGRADE_UNSUPPORTED")
+		}
+		if strings.HasPrefix(b, "/var/run/docker.sock:") {
+			sawSock = true
+		}
+		args = append(args, "-v", b)
+	}
+	if !sawSock {
+		return nil, fmt.Errorf("UPGRADE_UNSUPPORTED")
+	}
+	ports := make([]string, 0, len(old.HostConfig.PortBindings))
+	for cport, binds := range old.HostConfig.PortBindings {
+		for _, b := range binds {
+			p := b.HostPort + ":" + strings.TrimSuffix(cport, "/tcp")
+			if b.HostIP != "" {
+				p = b.HostIP + ":" + p
+			}
+			ports = append(ports, p)
+		}
+	}
+	sort.Strings(ports)
+	for _, p := range ports {
+		args = append(args, "-p", p)
+	}
+	for _, e := range old.Config.Env {
+		k, _, _ := strings.Cut(e, "=")
+		// Image-provided variables come from the new image; the agent image ref
+		// is replaced so self-update follows the upgraded line.
+		if k == "PATH" || k == "HOME" || k == "NASHUBS_AGENT_IMAGE" || k == "NASDECK_AGENT_IMAGE" || strings.ContainsAny(e, "\n\r") {
+			continue
+		}
+		args = append(args, "-e", e)
+	}
+	args = append(args, "-e", "NASHUBS_AGENT_IMAGE="+image, image)
+	return args, nil
+}
+
+// upgradeAgent swaps the running agent for one on the new image. The old
+// container is renamed and kept until the new one proves its identity, then
+// removed; on failure it is restored and started again.
+func upgradeAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) error {
+	raw, err := docker("inspect", "nashubs-agent")
+	if err != nil {
+		return fmt.Errorf("DOCKER_UNAVAILABLE")
+	}
+	var list []inspectedAgent
+	if json.Unmarshal(raw, &list) != nil || len(list) != 1 {
+		return fmt.Errorf("UPGRADE_UNSUPPORTED")
+	}
+	if list[0].Config.Image == r.Image {
+		return nil
+	}
+	args, err := upgradeArgs(list[0], r.Image)
+	if err != nil {
+		return err
+	}
+	_, _ = docker("rm", "-f", "nashubs-agent-previous")
+	if _, err := docker("rename", "nashubs-agent", "nashubs-agent-previous"); err != nil {
+		return fmt.Errorf("UPGRADE_FAILED")
+	}
+	_, _ = docker("stop", "-t", "20", "nashubs-agent-previous")
+	restore := func() {
+		_, _ = docker("rm", "-f", "nashubs-agent")
+		_, _ = docker("rename", "nashubs-agent-previous", "nashubs-agent")
+		_, _ = docker("start", "nashubs-agent")
+	}
+	if _, err := docker(args...); err != nil {
+		restore()
+		return fmt.Errorf("UPGRADE_FAILED")
+	}
+	for i := 0; i < 40; i++ {
+		out, err := docker("exec", "nashubs-agent", "nashubs-agent", "bootstrap-identity", r.KeyID)
+		var id bootstrapIdentity
+		if err == nil && json.Unmarshal(out, &id) == nil && id.Certificate != "" {
+			_, _ = docker("rm", "-f", "nashubs-agent-previous")
+			return nil
+		}
+		pause()
+	}
+	restore()
+	return fmt.Errorf("UPGRADE_FAILED")
 }
 
 type bootstrapDocker func(...string) ([]byte, error)
@@ -89,6 +208,12 @@ func bootstrapAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) (b
 		}
 	}
 	result := bootstrapResult{OK: true, Created: !exists}
+	if exists && r.Upgrade {
+		if err := upgradeAgent(r, docker, pause); err != nil {
+			return bootstrapResult{}, err
+		}
+		result.Upgraded = true
+	}
 	if !exists {
 		args := []string{"run", "-d", "--name", "nashubs-agent", "--restart", "unless-stopped", "-p", "8443:8443", "-v", "/var/run/docker.sock:/var/run/docker.sock"}
 		for _, v := range r.Volumes {
@@ -97,6 +222,9 @@ func bootstrapAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) (b
 		for _, env := range []string{"NASHUBS_NGINX_CONF_DIR=none", "NASHUBS_DATA_DIR=" + r.DataDir, "NASHUBS_HOST_DATA_DIR=" + r.DataDir,
 			"NASHUBS_AGENT_IMAGE=" + r.Image, "NASHUBS_TRUSTED_PUBKEY=" + r.KeyID, "NASHUBS_PAIRING_SECRET=" + r.Secret} {
 			args = append(args, "-e", env)
+		}
+		if r.LanIP != "" {
+			args = append(args, "-e", "NASHUBS_LAN_IP="+r.LanIP)
 		}
 		args = append(args, r.Image)
 		if _, err := docker(args...); err != nil {

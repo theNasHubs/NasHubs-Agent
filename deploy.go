@@ -364,11 +364,28 @@ func ensureBindMountDirs(compose []byte) {
 	}
 	for _, svc := range doc.Services {
 		for _, v := range svc.Volumes {
-			if host := bindHostPath(v); host != "" && isSafeMountPath(host) {
+			if host := bindHostPath(v); host != "" && isSafeMountPath(host) && insideExistingShare(host) {
 				_ = os.MkdirAll(host, 0o755)
 			}
 		}
 	}
+}
+
+// insideExistingShare reports whether a /volumeN path lies inside a shared folder
+// that already exists. The agent never creates /volumeN/<name> itself: such a
+// folder is not a DSM shared folder, so File Station and users cannot see it
+// (a Jellyfin MEDIA_PATH of /volume1/data once produced exactly that).
+func insideExistingShare(p string) bool {
+	cleaned := filepath.Clean(p)
+	if !strings.HasPrefix(cleaned, "/volume") {
+		return true // container-side /data paths
+	}
+	parts := strings.SplitN(strings.TrimPrefix(cleaned, "/"), "/", 3)
+	if len(parts) < 2 || parts[1] == "" {
+		return false
+	}
+	info, err := os.Stat("/" + parts[0] + "/" + parts[1])
+	return err == nil && info.IsDir()
 }
 
 // isSafeMountPath returns true if the resolved path is under /volume1/ (or

@@ -131,3 +131,12 @@ func TestRemoveAndRollbackInfraRequireAdmin(t *testing.T) {
 		}
 	}
 }
+
+func TestInsideExistingShare(t *testing.T) {
+	if insideExistingShare("/volume1") || insideExistingShare("/volume99/nosuchshare/x") {
+		t.Fatal("would create a folder outside a shared folder")
+	}
+	if !insideExistingShare("/data/x") {
+		t.Fatal("container data path refused")
+	}
+}

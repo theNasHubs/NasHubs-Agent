@@ -155,6 +155,23 @@ func (ds *deviceStore) lookup(keyID string) *Device {
 	return &c
 }
 
+// setRole changes the role of an enrolled device.
+func (ds *deviceStore) setRole(keyID string, role Role) error {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	d := ds.devices[keyID]
+	if d == nil {
+		return fmt.Errorf("device not found")
+	}
+	old := d.Role
+	d.Role = role
+	if err := ds.persistLocked(); err != nil {
+		d.Role = old
+		return err
+	}
+	return nil
+}
+
 // activeAdmins counts admin devices that are not revoked.
 func (ds *deviceStore) activeAdmins() int {
 	ds.mu.Lock()

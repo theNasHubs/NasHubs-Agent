@@ -104,6 +104,9 @@ func main() {
 		s.ensureAllProxies()
 	}
 
+	// Devices follow their DSM accounts (removed, disabled, admin group changes).
+	go s.runDSMRoleSync(10 * time.Minute)
+
 	addr := ":" + cfg.Port
 	// Public certificate identity is readable through authenticated DSM container logs.
 	// Never log the pairing secret or any private key.

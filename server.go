@@ -62,6 +62,7 @@ func (s *server) routes() http.Handler {
 	// enrolled but env-trusted key must be able to enroll itself).
 	mux.HandleFunc("POST /pair", s.requireAuth(s.handlePair))
 	mux.HandleFunc("POST /devices/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /devices/enroll-dsm", s.handleEnrollDSM)
 	mux.HandleFunc("POST /devices/invitations", s.requireAuth(s.requireRole(RoleAdmin, s.handleCreateInvitation)))
 
 	// Read-only routes (viewer and above).
@@ -121,7 +122,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1", "roles-v2"}
+	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1", "roles-v2", "dsm-enroll-v1"}
 	if s.nginxEnabled() {
 		// The agent and app web paths are published on DSM's own address.
 		caps = append(caps, "dsm-gateway-v1")

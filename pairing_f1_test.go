@@ -63,7 +63,7 @@ func TestUnpairedBootstrapKeyCanOnlyPair(t *testing.T) {
 			t.Fatalf("unpaired %s = %d %q, want 403 device not paired", path, resp.StatusCode, e.Error)
 		}
 	}
-	if code, d, pr := pairAs(t, ts, owner, "test-secret"); code != 200 || pr.Role != string(RoleOwner) {
+	if code, d, pr := pairAs(t, ts, owner, "test-secret"); code != 200 || pr.Role != string(RoleAdmin) {
 		t.Fatalf("pair = %d %s %+v", code, d, pr)
 	}
 	resp := freshSigned(t, owner, "GET", ts.URL, "/state", nil)

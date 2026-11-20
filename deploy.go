@@ -102,7 +102,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "UNRENDERED_PLACEHOLDER"})
 		return
 	}
-	isOwner := authFrom(r).role == RoleOwner
+	isOwner := authFrom(r).role == RoleAdmin
 	if !isOwner && infraAppIDs[req.ID] {
 		writeJSON(w, http.StatusForbidden, errMap("this deployment is managed by the owner role", nil))
 		return

@@ -22,10 +22,10 @@ func TestGetCloudflareRequiresAdmin(t *testing.T) {
 		gated(rec, req)
 		return rec.Code
 	}
-	if call(RoleViewer) != http.StatusForbidden {
+	if call(RoleMember) != http.StatusForbidden {
 		t.Error("viewer must be forbidden")
 	}
-	if call(RoleAdmin) != http.StatusOK || call(RoleOwner) != http.StatusOK {
+	if call(RoleAdmin) != http.StatusOK || call(RoleAdmin) != http.StatusOK {
 		t.Error("admin/owner must be allowed")
 	}
 	_ = h

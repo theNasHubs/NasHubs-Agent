@@ -28,7 +28,7 @@ func fakeComposeRecorder(t *testing.T) func() string {
 func deployReq(t *testing.T, s *server, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/deploy", strings.NewReader(body))
-	req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleOwner}))
+	req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleAdmin}))
 	rec := httptest.NewRecorder()
 	s.handleDeploy(rec, req)
 	return rec

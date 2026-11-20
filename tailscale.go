@@ -108,7 +108,7 @@ func (s *server) handleTailscaleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := tailscaleResponse(info)
-	if authFrom(r).role == RoleOwner && info.BackendState != "Running" {
+	if authFrom(r).role == RoleAdmin && info.BackendState != "Running" {
 		if url := s.tailscaleLoginURL(info); url != "" {
 			resp["authURL"] = url
 		}

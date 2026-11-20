@@ -127,7 +127,7 @@ func (st *invitationStore) consume(code string, devices *deviceStore) (Role, err
 	}
 	if inv.Issuer != "" {
 		d := devices.lookup(inv.Issuer)
-		if d == nil || d.revoked() || d.Role != RoleOwner {
+		if d == nil || d.revoked() || d.Role != RoleAdmin {
 			return "", fmt.Errorf("invitation issuer unavailable")
 		}
 	}
@@ -136,7 +136,10 @@ func (st *invitationStore) consume(code string, devices *deviceStore) (Role, err
 	if err := st.persistLocked(); err != nil {
 		return "", err
 	}
-	return inv.Role, nil
+	if r := normalizeRole(inv.Role); r != "" {
+		return r, nil
+	}
+	return "", fmt.Errorf("invitation invalid or expired")
 }
 
 func (s *server) createInvitation(w http.ResponseWriter, r *http.Request, localRoot bool) {
@@ -151,7 +154,9 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request, localR
 	if req.Role == "" {
 		req.Role = RoleAdmin
 	}
-	if req.Role != RoleViewer && req.Role != RoleAdmin && !(localRoot && req.Role == RoleOwner) {
+	// "owner" and "viewer" still come from older installers and the recovery CLI.
+	req.Role = normalizeRole(req.Role)
+	if req.Role == "" {
 		writeJSON(w, 400, errMap("invalid invitation role", nil))
 		return
 	}
@@ -159,8 +164,8 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request, localR
 	if !localRoot {
 		issuer = authFrom(r).keyID
 		// An env-trusted bootstrap owner must enroll before delegating access.
-		if d := s.devices.lookup(issuer); d == nil || d.revoked() || d.Role != RoleOwner {
-			writeJSON(w, 403, errMap("enroll owner first", nil))
+		if d := s.devices.lookup(issuer); d == nil || d.revoked() || d.Role != RoleAdmin {
+			writeJSON(w, 403, errMap("enroll admin first", nil))
 			return
 		}
 	}

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// deployReqAs is deployReq with an explicit role instead of RoleOwner.
+// deployReqAs is deployReq with an explicit role instead of an admin (only members are restricted now).
 func deployReqAs(t *testing.T, s *server, body string, role Role) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/deploy", strings.NewReader(body))
@@ -38,12 +38,12 @@ func fakeDockerProjectLabel(t *testing.T, project string) func() string {
 
 // #27: a non-owner compose naming a foreign container must NOT rm -f it; the
 // name conflict is left for `compose up` to fail on.
-func TestDeployNonOwnerNeverRemovesForeignContainer(t *testing.T) {
+func TestDeployMemberNeverRemovesForeignContainer(t *testing.T) {
 	log := fakeComposeRecorder(t) // inspect returns "" → foreign/unknown container
 	dir := t.TempDir()
 	s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}, composeArgs: []string{"docker", "compose"}}
 	body := `{"id":"evil","compose":"services:\n  x:\n    image: alpine\n    container_name: syncloud-drive-server\n"}`
-	rec := deployReqAs(t, s, body, RoleAdmin)
+	rec := deployReqAs(t, s, body, RoleMember)
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -61,7 +61,7 @@ func TestDeployNonOwnerRemovesOwnProjectContainer(t *testing.T) {
 	dir := t.TempDir()
 	s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}, composeArgs: []string{"docker", "compose"}}
 	body := `{"id":"immich","compose":"services:\n  db:\n    image: x\n    container_name: immich_redis\n"}`
-	rec := deployReqAs(t, s, body, RoleAdmin)
+	rec := deployReqAs(t, s, body, RoleMember)
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -72,13 +72,13 @@ func TestDeployNonOwnerRemovesOwnProjectContainer(t *testing.T) {
 
 // #29: a non-owner may not deploy over the remote-access infra ids — doing so
 // would rm -f the tunnel container and cut remote access.
-func TestDeployInfraRequiresOwner(t *testing.T) {
+func TestDeployInfraRequiresAdmin(t *testing.T) {
 	for _, id := range []string{"cloudflared", "cloudflared-quick", "cloudflared-login", "tailscale"} {
 		log := fakeComposeRecorder(t)
 		dir := t.TempDir()
 		s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}, composeArgs: []string{"docker", "compose"}}
 		body := `{"id":"` + id + `","compose":"services:\n  x:\n    image: alpine\n"}`
-		rec := deployReqAs(t, s, body, RoleAdmin)
+		rec := deployReqAs(t, s, body, RoleMember)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("%s: status %d, want 403 (%s)", id, rec.Code, rec.Body)
 		}
@@ -92,12 +92,12 @@ func TestDeployInfraRequiresOwner(t *testing.T) {
 
 // #29: deploys that smuggle infra container names are rejected for non-owners
 // before the compose is even written.
-func TestDeployNonOwnerRejectsInfraContainerName(t *testing.T) {
+func TestDeployMemberRejectsInfraContainerName(t *testing.T) {
 	log := fakeComposeRecorder(t)
 	dir := t.TempDir()
 	s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}, composeArgs: []string{"docker", "compose"}}
 	body := `{"id":"x","compose":"services:\n  a:\n    image: alpine\n    container_name: nashubs-cloudflared\n"}`
-	rec := deployReqAs(t, s, body, RoleAdmin)
+	rec := deployReqAs(t, s, body, RoleMember)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403 (%s)", rec.Code, rec.Body)
 	}
@@ -109,13 +109,13 @@ func TestDeployNonOwnerRejectsInfraContainerName(t *testing.T) {
 }
 
 // #29: /remove and /rollback on infra ids are owner-only.
-func TestRemoveAndRollbackInfraRequireOwner(t *testing.T) {
+func TestRemoveAndRollbackInfraRequireAdmin(t *testing.T) {
 	for _, id := range []string{"cloudflared", "tailscale"} {
 		dir := t.TempDir()
 		s := &server{cfg: Config{DataDir: dir, HostDataDir: dir}}
 
 		req := httptest.NewRequest(http.MethodPost, "/remove/"+id, nil)
-		req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleAdmin}))
+		req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleMember}))
 		rec := httptest.NewRecorder()
 		s.handleRemove(rec, req)
 		if rec.Code != http.StatusForbidden {
@@ -123,7 +123,7 @@ func TestRemoveAndRollbackInfraRequireOwner(t *testing.T) {
 		}
 
 		req = httptest.NewRequest(http.MethodPost, "/rollback/"+id, nil)
-		req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleAdmin}))
+		req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: RoleMember}))
 		rec = httptest.NewRecorder()
 		s.handleRollback(rec, req)
 		if rec.Code != http.StatusForbidden {

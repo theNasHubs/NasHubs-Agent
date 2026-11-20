@@ -1,8 +1,17 @@
 # Install once, enroll devices live
 
 The Agent runs on the NAS. Android/iOS clients sign requests with their own
-Ed25519 identity. NAS device roles (`owner`, `admin`, `viewer`) are independent
-of Firebase accounts and NasHubs Pro entitlements.
+Ed25519 identity. Device roles mirror the DSM account that paired the device and
+are independent of Firebase accounts and NasHubs Pro entitlements:
+
+- `admin`: a DSM administrator. Installs and upgrades the Agent, installs and
+  configures mini-apps, manages devices and remote access. All admins are equal.
+- `member`: an ordinary DSM user. Uses the mini-apps open to members and can sign
+  its own device out.
+
+Agents before 2.2 stored `owner`, `admin` and `viewer`; on start `owner` becomes
+`admin` and `viewer` becomes `member`, and the store is rewritten. The last admin
+device cannot revoke itself.
 
 ## Existing devices
 
@@ -14,8 +23,8 @@ restore it from backup instead of silently rotating every client's pin.
 
 ## Add another phone
 
-1. An enrolled owner calls signed `POST /devices/invitations` with
-   `{"role":"admin"}` or `{"role":"viewer"}`.
+1. An enrolled admin calls signed `POST /devices/invitations` with
+   `{"role":"admin"}` or `{"role":"member"}`.
 2. The response contains `code`, `expiresAt`, `role`, and `certFingerprint`.
    Share the code privately and independently verify the Agent's TLS identity.
 3. The new phone signs `POST /devices/enroll` with

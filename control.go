@@ -55,7 +55,7 @@ func (s *server) startControl() (func(), error) {
 
 func runInvitationCLI(args []string) error {
 	flags := flag.NewFlagSet("invite", flag.ContinueOnError)
-	role := flags.String("role", "admin", "admin, viewer, or owner (root recovery only)")
+	role := flags.String("role", "admin", "admin or member")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

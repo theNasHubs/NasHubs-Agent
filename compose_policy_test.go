@@ -155,11 +155,11 @@ func TestComposePolicyRejectsSymlinkedBind(t *testing.T) {
 	}
 }
 
-func TestDeployPolicyAppliesToAdminOnly(t *testing.T) {
+func TestDeployPolicyAppliesToMembers(t *testing.T) {
 	data := t.TempDir()
 	s := &server{cfg: Config{DataDir: data, HostDataDir: data}}
 	body := `{"id":"evil","compose":"services:\n  a:\n    image: alpine\n    privileged: true\n"}`
-	for _, role := range []Role{RoleAdmin, RoleViewer, ""} {
+	for _, role := range []Role{RoleMember, ""} {
 		req := httptest.NewRequest(http.MethodPost, "/deploy", strings.NewReader(body))
 		req = req.WithContext(context.WithValue(req.Context(), authKey, authResult{role: role}))
 		rec := httptest.NewRecorder()

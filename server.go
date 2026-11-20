@@ -62,19 +62,19 @@ func (s *server) routes() http.Handler {
 	// enrolled but env-trusted key must be able to enroll itself).
 	mux.HandleFunc("POST /pair", s.requireAuth(s.handlePair))
 	mux.HandleFunc("POST /devices/enroll", s.handleEnroll)
-	mux.HandleFunc("POST /devices/invitations", s.requireAuth(s.requireRole(RoleOwner, s.handleCreateInvitation)))
+	mux.HandleFunc("POST /devices/invitations", s.requireAuth(s.requireRole(RoleAdmin, s.handleCreateInvitation)))
 
 	// Read-only routes (viewer and above).
-	mux.HandleFunc("GET /logs/", s.requireAuth(s.requireRole(RoleViewer, s.handleLogs)))
-	mux.HandleFunc("GET /health/", s.requireAuth(s.requireRole(RoleViewer, s.handleHealth)))
-	mux.HandleFunc("GET /proxies", s.requireAuth(s.requireRole(RoleViewer, s.handleListProxies)))
-	mux.HandleFunc("GET /state", s.requireAuth(s.requireRole(RoleViewer, s.handleState)))
-	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleViewer, s.handleRemoteStatus)))
+	mux.HandleFunc("GET /logs/", s.requireAuth(s.requireRole(RoleAdmin, s.handleLogs)))
+	mux.HandleFunc("GET /health/", s.requireAuth(s.requireRole(RoleMember, s.handleHealth)))
+	mux.HandleFunc("GET /proxies", s.requireAuth(s.requireRole(RoleAdmin, s.handleListProxies)))
+	mux.HandleFunc("GET /state", s.requireAuth(s.requireRole(RoleMember, s.handleState)))
+	mux.HandleFunc("GET /remote-status", s.requireAuth(s.requireRole(RoleMember, s.handleRemoteStatus)))
 	mux.HandleFunc("GET /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleGetCloudflare)))
-	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleViewer, s.handleListDevices)))
-	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleViewer, s.handleListVolumes)))
-	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleViewer, s.handleResources)))
-	mux.HandleFunc("GET /shares", s.requireAuth(s.requireRole(RoleViewer, s.handleListShares)))
+	mux.HandleFunc("GET /devices", s.requireAuth(s.requireRole(RoleAdmin, s.handleListDevices)))
+	mux.HandleFunc("GET /volumes", s.requireAuth(s.requireRole(RoleAdmin, s.handleListVolumes)))
+	mux.HandleFunc("GET /resources", s.requireAuth(s.requireRole(RoleMember, s.handleResources)))
+	mux.HandleFunc("GET /shares", s.requireAuth(s.requireRole(RoleAdmin, s.handleListShares)))
 	mux.HandleFunc("GET /remote/tailscale", s.requireAuth(s.requireRole(RoleAdmin, s.handleTailscaleStatus)))
 
 	// Mutating routes (admin and above).
@@ -87,12 +87,12 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /apps/jellyfin/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleJellyfinSetup)))
 	mux.HandleFunc("POST /apps/immich/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleImmichSetup)))
 	// Public access to the agent is an owner decision.
-	mux.HandleFunc("POST /remote/tailscale/relogin", s.requireAuth(s.requireRole(RoleOwner, s.handleTailscaleRelogin)))
+	mux.HandleFunc("POST /remote/tailscale/relogin", s.requireAuth(s.requireRole(RoleAdmin, s.handleTailscaleRelogin)))
 	// Typed self-update replaces the removed generic /exec.
 	mux.HandleFunc("POST /agent/update", s.requireAuth(s.requireRole(RoleAdmin, s.handleAgentUpdate)))
 
 	// Owner-only device management.
-	mux.HandleFunc("POST /devices/revoke", s.requireAuth(s.requireRole(RoleOwner, s.handleRevokeDevice)))
+	mux.HandleFunc("POST /devices/revoke", s.requireAuth(s.requireRole(RoleMember, s.handleRevokeDevice)))
 	return s.recoverer(mux)
 }
 
@@ -107,12 +107,10 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 		}
 		ok := false
 		switch min {
-		case RoleViewer:
-			ok = role == RoleViewer || role == RoleAdmin || role == RoleOwner
+		case RoleMember:
+			ok = role == RoleMember || role == RoleAdmin
 		case RoleAdmin:
-			ok = role == RoleAdmin || role == RoleOwner
-		case RoleOwner:
-			ok = role == RoleOwner
+			ok = role == RoleAdmin
 		}
 		if !ok {
 			writeJSON(w, http.StatusForbidden, errMap("insufficient role", nil))
@@ -123,7 +121,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1"}
+	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1", "roles-v2"}
 	if s.nginxEnabled() {
 		// The agent and app web paths are published on DSM's own address.
 		caps = append(caps, "dsm-gateway-v1")

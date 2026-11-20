@@ -17,7 +17,7 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errMap("bad id", nil))
 		return
 	}
-	if authFrom(r).role != RoleOwner && infraAppIDs[id] {
+	if authFrom(r).role != RoleAdmin && infraAppIDs[id] {
 		writeJSON(w, http.StatusForbidden, errMap("this deployment is managed by the owner role", nil))
 		return
 	}

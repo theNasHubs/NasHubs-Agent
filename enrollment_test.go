@@ -83,7 +83,7 @@ func TestLiveEnrollmentPersistsAndReconnectsAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	s, ts := enrollmentServer(t, dir)
 	owner := freshKey(t)
-	s.devices.enroll(keyID(owner), "existing iPhone", RoleOwner)
+	s.devices.enroll(keyID(owner), "existing iPhone", RoleAdmin)
 	code := invitationCode(t, s, RoleAdmin, keyID(owner))
 	newKey := freshKey(t)
 	assertStatus(t, enrollRequest(t, ts, newKey, "/state", nil), 401)
@@ -108,26 +108,27 @@ func TestLiveEnrollmentPersistsAndReconnectsAfterRestart(t *testing.T) {
 	}
 }
 func TestInvitationAccessAndRoles(t *testing.T) {
-	for _, role := range []Role{RoleViewer, RoleAdmin, RoleOwner} {
+	for _, role := range []Role{RoleMember, RoleAdmin} {
 		t.Run(string(role), func(t *testing.T) {
 			s, ts := enrollmentServer(t, t.TempDir())
 			k := freshKey(t)
 			s.devices.enroll(keyID(k), "device", role)
 			want := 403
-			if role == RoleOwner {
+			if role == RoleAdmin {
 				want = 200
 			}
-			assertStatus(t, enrollRequest(t, ts, k, "/devices/invitations", map[string]string{"role": "viewer"}), want)
-			if role == RoleOwner {
-				assertStatus(t, enrollRequest(t, ts, k, "/devices/invitations", map[string]string{"role": "owner"}), 400)
+			assertStatus(t, enrollRequest(t, ts, k, "/devices/invitations", map[string]string{"role": "member"}), want)
+			if role == RoleAdmin {
+				assertStatus(t, enrollRequest(t, ts, k, "/devices/invitations", map[string]string{"role": "root"}), 400)
 			}
 		})
 	}
 	s, ts := enrollmentServer(t, t.TempDir())
 	k := freshKey(t)
-	c := invitationCode(t, s, RoleViewer, "")
+	c := invitationCode(t, s, RoleMember, "")
 	assertStatus(t, enrollRequest(t, ts, k, "/devices/enroll", map[string]string{"code": c}), 200)
-	assertStatus(t, enrollRequest(t, ts, k, "/devices", nil), 200)
+	assertStatus(t, enrollRequest(t, ts, k, "/state", nil), 200)
+	assertStatus(t, enrollRequest(t, ts, k, "/devices", nil), 403)
 	assertStatus(t, enrollRequest(t, ts, k, "/deploy", map[string]string{}), 403)
 }
 func TestInvalidExpiredAndRevokedInvitations(t *testing.T) {
@@ -135,7 +136,7 @@ func TestInvalidExpiredAndRevokedInvitations(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s, ts := enrollmentServer(t, t.TempDir())
 			owner := freshKey(t)
-			d, _ := s.devices.enroll(keyID(owner), "owner", RoleOwner)
+			d, _ := s.devices.enroll(keyID(owner), "owner", RoleAdmin)
 			c := invitationCode(t, s, RoleAdmin, keyID(owner))
 			k := freshKey(t)
 			switch mode {
@@ -202,7 +203,7 @@ func TestRevokedDeviceCannotReenroll(t *testing.T) {
 	s, _ := enrollmentServer(t, t.TempDir())
 	d, _ := s.devices.enroll("key", "device", RoleAdmin)
 	s.devices.revoke(d.DeviceID)
-	if _, err := s.devices.enroll("key", "device", RoleOwner); err == nil {
+	if _, err := s.devices.enroll("key", "device", RoleAdmin); err == nil {
 		t.Fatal("revoked key silently restored")
 	}
 }
@@ -249,7 +250,7 @@ func TestCorruptDeviceStoreCannotFallBackToBootstrapTrust(t *testing.T) {
 			k := freshKey(t)
 			s.cfg.TrustedPublicKeys[keyID(k)] = true
 			assertStatus(t, enrollRequest(t, ts, k, "/devices", nil), 401)
-			if _, err := s.devices.enroll(keyID(k), "owner", RoleOwner); err == nil {
+			if _, err := s.devices.enroll(keyID(k), "owner", RoleAdmin); err == nil {
 				t.Fatal("corrupt store overwritten")
 			}
 		})
@@ -270,7 +271,7 @@ func TestDeviceEnrollmentDiskFailureDoesNotGrantInMemoryAccess(t *testing.T) {
 func TestResourcesUsesHostWithoutDSM(t *testing.T) {
 	s, ts := enrollmentServer(t, t.TempDir())
 	k := freshKey(t)
-	s.devices.enroll(keyID(k), "viewer", RoleViewer)
+	s.devices.enroll(keyID(k), "viewer", RoleMember)
 	assertStatus(t, enrollRequest(t, ts, freshKey(t), "/resources", nil), 401)
 	r := enrollRequest(t, ts, k, "/resources", nil)
 	assertStatus(t, r, 200)
@@ -334,7 +335,7 @@ func TestExistingTLSIdentityNeverRotatesSilently(t *testing.T) {
 func TestEnrolledReconnectDoesNotConsumeBootstrapAttemptBudget(t *testing.T) {
 	s, ts := enrollmentServer(t, t.TempDir())
 	k := freshKey(t)
-	s.devices.enroll(keyID(k), "owner", RoleOwner)
+	s.devices.enroll(keyID(k), "owner", RoleAdmin)
 	s.pairLimiter = newRateLimiter(1, time.Minute)
 	for i := 0; i < 15; i++ {
 		assertStatus(t, enrollRequest(t, ts, k, "/pair", pairRequest{}), 200)

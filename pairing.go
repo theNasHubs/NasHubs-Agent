@@ -102,10 +102,8 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Close()
 
+	// A bootstrap key comes from whoever installed the Agent with root on the NAS.
 	role := RoleAdmin
-	if s.devices.isEmpty() {
-		role = RoleOwner
-	}
 	label := req.Label
 	if label == "" {
 		label = "device"

@@ -287,11 +287,8 @@ func bootstrapAgent(r bootstrapRequest, docker bootstrapDocker, pause func()) (b
 	result.Certificate = id.Certificate
 	if !id.Enrolled {
 		// Also covers restored data directories and device #10, without restarting.
-		role := "owner"
-		if id.HasOwner {
-			role = "admin"
-		}
-		out, err := docker("exec", "nashubs-agent", "nashubs-agent", "invite", "--role", role)
+		// Running the installer needs a DSM administrator session, so every device it pairs is an admin.
+		out, err := docker("exec", "nashubs-agent", "nashubs-agent", "invite", "--role", "admin")
 		var invitation struct {
 			OK   bool   `json:"ok"`
 			Code string `json:"code"`
@@ -316,7 +313,7 @@ func runBootstrapIdentity(key string) error {
 	}
 	id := bootstrapIdentity{Certificate: fp}
 	for _, d := range ds.devices {
-		if d.Role == RoleOwner && !d.revoked() {
+		if normalizeRole(d.Role) == RoleAdmin && !d.revoked() {
 			id.HasOwner = true
 		}
 		if d.KeyID == key {

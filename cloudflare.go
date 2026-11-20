@@ -199,7 +199,7 @@ func (s *server) handleConfigureCloudflare(w http.ResponseWriter, r *http.Reques
 		Tunnel:          uuid,
 		CredentialsFile: fmt.Sprintf("/root/.cloudflared/%s.json", uuid),
 	}
-	isOwner := authFrom(r).role == RoleOwner
+	isOwner := authFrom(r).role == RoleAdmin
 	for _, rule := range req.Ingress {
 		if rule.Hostname != "" && !hostnameRe.MatchString(rule.Hostname) {
 			writeJSON(w, http.StatusBadRequest, errMap("validation", fmt.Errorf("invalid ingress hostname %q", rule.Hostname)))

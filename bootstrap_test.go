@@ -68,7 +68,7 @@ func TestBootstrapCreatesAgentWithPersistentSamePathVolumesAndLiveOwnerEnrollmen
 	if strings.Contains(strings.Join(run, " "), "NGINX_CONF_DIR=none") {
 		t.Fatal("the DSM gateway must not be disabled")
 	}
-	if !reflect.DeepEqual(calls[len(calls)-1], []string{"exec", "nashubs-agent", "nashubs-agent", "invite", "--role", "owner"}) {
+	if !reflect.DeepEqual(calls[len(calls)-1], []string{"exec", "nashubs-agent", "nashubs-agent", "invite", "--role", "admin"}) {
 		t.Fatal(calls)
 	}
 }

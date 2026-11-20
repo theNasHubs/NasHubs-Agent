@@ -35,7 +35,7 @@ func TestDeployRendersAppDirAndRejectsUnrendered(t *testing.T) {
 	call := func(compose string) (int, string) {
 		body, _ := json.Marshal(deployRequest{ID: "jellyfin", Compose: compose})
 		req := httptest.NewRequest("POST", "/deploy", strings.NewReader(string(body)))
-		req = req.WithContext(withAuth(req.Context(), RoleViewer))
+		req = req.WithContext(withAuth(req.Context(), RoleMember))
 		rec := httptest.NewRecorder()
 		s.handleDeploy(rec, req)
 		return rec.Code, rec.Body.String()
@@ -117,11 +117,11 @@ func TestTailscaleStatusReportsTailnetAccount(t *testing.T) {
 	}
 }
 
-func TestTailscaleLoginURLOnlyForOwner(t *testing.T) {
+func TestTailscaleLoginURLOnlyForAdmin(t *testing.T) {
 	for _, tc := range []struct {
 		role Role
 		want bool
-	}{{RoleAdmin, false}, {RoleOwner, true}} {
+	}{{RoleMember, false}, {RoleAdmin, true}} {
 		var calls [][]string
 		on := false
 		s := &server{runCmd: fakeTailscale(&on, &calls)}

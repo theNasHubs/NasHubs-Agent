@@ -12,18 +12,34 @@ import (
 	"time"
 )
 
-// Role is the permission level of an enrolled device (iPhone).
+// Role is the permission level of an enrolled device. It mirrors the DSM account
+// that paired it:
 //
-//	owner  — full control: pair/revoke devices, all mutating actions
-//	admin  — deploy/operate apps + gateway/tunnel, but no device management
-//	viewer — read-only status/logs
+//	admin  — a DSM administrator: runs the Agent, installs and configures mini-apps,
+//	         manages devices and remote access. All admins are equal.
+//	member — an ordinary DSM user: uses the mini-apps that are open to members.
 type Role string
 
 const (
-	RoleOwner  Role = "owner"
 	RoleAdmin  Role = "admin"
-	RoleViewer Role = "viewer"
+	RoleMember Role = "member"
+
+	// Roles stored by agents before 2.2; read once and migrated.
+	legacyRoleOwner  Role = "owner"
+	legacyRoleViewer Role = "viewer"
 )
+
+// normalizeRole maps legacy role names onto the two current roles.
+// It returns "" for anything else.
+func normalizeRole(r Role) Role {
+	switch r {
+	case RoleAdmin, legacyRoleOwner:
+		return RoleAdmin
+	case RoleMember, legacyRoleViewer:
+		return RoleMember
+	}
+	return ""
+}
 
 // Device is one enrolled client identity.
 type Device struct {
@@ -31,6 +47,7 @@ type Device struct {
 	KeyID     string `json:"keyId"` // base64 Ed25519 public key (== the signing key)
 	Label     string `json:"label"`
 	Role      Role   `json:"role"`
+	DSMUser   string `json:"dsmUser,omitempty"` // DSM account that paired this device (empty for devices paired before 2.2)
 	PairedAt  string `json:"pairedAt"`
 	LastSeen  string `json:"lastSeenAt,omitempty"`
 	RevokedAt string `json:"revokedAt,omitempty"`
@@ -51,36 +68,47 @@ type deviceStore struct {
 
 func newDeviceStore(dir string) *deviceStore {
 	ds := &deviceStore{path: filepath.Join(dir, "devices.json"), devices: map[string]*Device{}}
-	ds.load()
+	if ds.load() {
+		ds.mu.Lock()
+		if err := ds.persistLocked(); err != nil {
+			ds.loadErr = err
+		}
+		ds.mu.Unlock()
+	}
 	return ds
 }
 
-func (ds *deviceStore) load() {
+// load reads the store and reports whether legacy roles were migrated (the caller persists).
+func (ds *deviceStore) load() (migrated bool) {
 	b, err := os.ReadFile(ds.path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			ds.loadErr = err
 		}
-		return // no store yet
+		return false // no store yet
 	}
 	var list []*Device
 	if err := json.Unmarshal(b, &list); err != nil {
 		ds.loadErr = err
-		return
+		return false
 	}
 	if list == nil {
 		ds.loadErr = fmt.Errorf("invalid device store")
-		return
+		return false
 	}
 	for _, d := range list {
-		if d == nil || d.KeyID == "" || (d.Role != RoleOwner && d.Role != RoleAdmin && d.Role != RoleViewer) || ds.devices[d.KeyID] != nil {
+		if d == nil || d.KeyID == "" || normalizeRole(d.Role) == "" || ds.devices[d.KeyID] != nil {
 			ds.loadErr = fmt.Errorf("invalid device store")
-			return
+			ds.devices = map[string]*Device{}
+			return false
 		}
-		if d.KeyID != "" {
-			ds.devices[d.KeyID] = d
+		if r := normalizeRole(d.Role); r != d.Role {
+			d.Role = r
+			migrated = true
 		}
+		ds.devices[d.KeyID] = d
 	}
+	return migrated
 }
 
 // persistLocked writes the store atomically. Caller must hold ds.mu.
@@ -127,6 +155,19 @@ func (ds *deviceStore) lookup(keyID string) *Device {
 	return &c
 }
 
+// activeAdmins counts admin devices that are not revoked.
+func (ds *deviceStore) activeAdmins() int {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	n := 0
+	for _, d := range ds.devices {
+		if d.Role == RoleAdmin && !d.revoked() {
+			n++
+		}
+	}
+	return n
+}
+
 // isEmpty reports whether there is no active (non-revoked) device yet.
 func (ds *deviceStore) isEmpty() bool {
 	ds.mu.Lock()
@@ -142,6 +183,11 @@ func (ds *deviceStore) isEmpty() bool {
 // enroll records a new device, or returns the existing one if the key is
 // already enrolled and not revoked (idempotent).
 func (ds *deviceStore) enroll(keyID, label string, role Role) (*Device, error) {
+	return ds.enrollAs(keyID, label, role, "")
+}
+
+// enrollAs enrolls a device paired by a known DSM account.
+func (ds *deviceStore) enrollAs(keyID, label string, role Role, dsmUser string) (*Device, error) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 	if ds.loadErr != nil {
@@ -163,6 +209,7 @@ func (ds *deviceStore) enroll(keyID, label string, role Role) (*Device, error) {
 		KeyID:    keyID,
 		Label:    label,
 		Role:     role,
+		DSMUser:  dsmUser,
 		PairedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	ds.devices[keyID] = d
@@ -226,8 +273,8 @@ type revokeRequest struct {
 	DeviceID string `json:"deviceId"`
 }
 
-// handleRevokeDevice revokes another device (owner-only). A device may not
-// revoke itself (prevents accidentally locking everyone out).
+// handleRevokeDevice revokes a device. Admins revoke any device; members only their own
+// (signing out). The last admin device cannot revoke itself, so the NAS always keeps one.
 func (s *server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	var req revokeRequest
 	if err := decodeBody(r, &req); err != nil || req.DeviceID == "" {
@@ -235,8 +282,14 @@ func (s *server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth := authFrom(r)
-	if d := s.devices.lookup(auth.keyID); d != nil && d.DeviceID == req.DeviceID {
-		writeJSON(w, http.StatusBadRequest, errMap("cannot revoke your own device", nil))
+	self := s.devices.lookup(auth.keyID)
+	own := self != nil && self.DeviceID == req.DeviceID
+	if auth.role != RoleAdmin && !own {
+		writeJSON(w, http.StatusForbidden, errMap("insufficient role", nil))
+		return
+	}
+	if own && auth.role == RoleAdmin && s.devices.activeAdmins() <= 1 {
+		writeJSON(w, http.StatusBadRequest, errMap("cannot revoke the last admin device", nil))
 		return
 	}
 	ok, err := s.devices.revoke(req.DeviceID)

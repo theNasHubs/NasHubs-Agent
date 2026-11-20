@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -240,15 +241,36 @@ func TestJellyfinSetupRunsWizardAndCreatesLibraries(t *testing.T) {
 	}
 }
 
-func TestJellyfinSetupRefusesCompletedServer(t *testing.T) {
+func TestJellyfinSetupOnCompletedServerOnlyAddsMissingLibraries(t *testing.T) {
+	var seen []string
 	s := withAppServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/System/Info/Public" {
-			t.Error("touched a configured server:", r.URL.Path)
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/Startup"):
+			t.Error("touched the wizard of a configured server:", r.URL.Path)
+		case r.URL.Path == "/System/Info/Public":
+			w.Write([]byte(`{"StartupWizardCompleted":true}`))
+		case r.URL.Path == "/Users/AuthenticateByName":
+			var b map[string]string
+			json.NewDecoder(r.Body).Decode(&b)
+			if b["Pw"] != "secret1" {
+				w.WriteHeader(401)
+				return
+			}
+			w.Write([]byte(`{"AccessToken":"t","User":{"Policy":{"IsAdministrator":true}}}`))
+		case r.Method == "GET" && r.URL.Path == "/Library/VirtualFolders":
+			w.Write([]byte(`[{"Name":"Movies"}]`))
+		default:
+			w.WriteHeader(204)
 		}
-		w.Write([]byte(`{"StartupWizardCompleted":true}`))
 	})
-	if _, err := s.setupJellyfin(jellyfinSetupReq{Port: 8096, Username: "a", Password: "secret1"}); err == nil || err.Error() != "ALREADY_SET_UP" {
+	libs := []jellyfinLibrary{{Name: "Movies", Type: "movies", Paths: []string{"/volume1/video/Movies"}}, {Name: "Shows", Type: "tvshows", Paths: []string{"/volume1/video/Shows"}}}
+	if _, err := s.setupJellyfin(jellyfinSetupReq{Port: 8096, Username: "a", Password: "wrong", Libraries: libs}); err == nil || err.Error() != "ALREADY_SET_UP" {
 		t.Fatal(err)
+	}
+	res, err := s.setupJellyfin(jellyfinSetupReq{Port: 8096, Username: "a", Password: "secret1", Libraries: libs})
+	if err != nil || res["ok"] != true || fmt.Sprint(res["createdLibraries"]) != "[Shows]" {
+		t.Fatal(res, err)
 	}
 }
 

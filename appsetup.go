@@ -187,7 +187,10 @@ func (s *server) setupJellyfin(req jellyfinSetupReq) (map[string]any, error) {
 		return nil, err
 	}
 	if info.StartupWizardCompleted {
-		return nil, setupError{Code: "ALREADY_SET_UP"}
+		// Already configured: never touch the wizard. With the existing admin login
+		// the agent only adds the libraries that are missing (e.g. after the media
+		// share moved); a wrong login still means "sign in with the existing account".
+		return s.addJellyfinLibraries(req, info.ServerName, info.Version)
 	}
 	lang, country := req.Language, req.Country
 	if lang == "" {
@@ -349,4 +352,49 @@ func (s *server) handleImmichSetup(w http.ResponseWriter, r *http.Request) {
 	delete(res, "_token")
 	delete(res, "_userId")
 	writeJSON(w, http.StatusOK, res)
+}
+
+// addJellyfinLibraries adds the requested libraries that a configured Jellyfin
+// lacks, signed in as one of its administrators.
+func (s *server) addJellyfinLibraries(req jellyfinSetupReq, serverName, version string) (map[string]any, error) {
+	base := appBaseURL(req.Port)
+	h := map[string]string{"Authorization": jellyfinClientAuth}
+	var auth struct {
+		AccessToken string `json:"AccessToken"`
+		User        struct {
+			Policy struct {
+				IsAdministrator bool `json:"IsAdministrator"`
+			} `json:"Policy"`
+		} `json:"User"`
+	}
+	if err := s.callJSON("POST", base+"/Users/AuthenticateByName", h, map[string]any{"Username": req.Username, "Pw": req.Password}, &auth, "LOGIN_FAILED"); err != nil || auth.AccessToken == "" || !auth.User.Policy.IsAdministrator {
+		return nil, setupError{Code: "ALREADY_SET_UP"}
+	}
+	th := map[string]string{"Authorization": jellyfinClientAuth + `, Token="` + auth.AccessToken + `"`}
+	var existing []struct {
+		Name string `json:"Name"`
+	}
+	_ = s.callJSON("GET", base+"/Library/VirtualFolders", th, nil, &existing, "LIBRARY_FAILED")
+	have := map[string]bool{}
+	for _, f := range existing {
+		have[strings.ToLower(f.Name)] = true
+	}
+	created := []string{}
+	for _, l := range req.Libraries {
+		if have[strings.ToLower(l.Name)] {
+			continue
+		}
+		q := url.Values{"name": {l.Name}, "collectionType": {l.Type}, "refreshLibrary": {"true"}}
+		for _, p := range l.Paths {
+			if insideExistingShare(p) {
+				_, _ = s.host("mkdir", "-p", p)
+			}
+			q.Add("paths", p)
+		}
+		if err := s.callJSON("POST", base+"/Library/VirtualFolders?"+q.Encode(), th, map[string]any{"LibraryOptions": map[string]any{}}, nil, "LIBRARY_FAILED"); err != nil {
+			return map[string]any{"ok": false, "error": "LIBRARY_FAILED", "createdLibraries": created, "_token": auth.AccessToken}, nil
+		}
+		created = append(created, l.Name)
+	}
+	return map[string]any{"ok": true, "serverName": serverName, "version": version, "createdLibraries": created, "existing": true, "_token": auth.AccessToken}, nil
 }

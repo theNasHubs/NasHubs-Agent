@@ -86,3 +86,25 @@ that runs a different image, keeping its env (trusted keys, data dir), binds and
 published ports. The old container is renamed and kept until the new one
 reports its identity, then removed; on failure it is restored and started.
 Without `upgrade` an existing agent is never touched.
+
+## Member accounts in shared apps (members-v1)
+
+DSM users are the source of truth. Once an administrator links an app (automatically at
+Immich/Jellyfin quick setup, or `POST /apps/{immich|jellyfin}/link` with the app's admin
+login for an existing install) the agent keeps one API key for it in `members.json`
+(private data dir, mode 0600) and every 10 minutes, and 30 s after start:
+
+- **Immich**: creates `homes/<user>/Photos` (owned by the user) for every active DSM user,
+  binds it read-only at `{{APP_DIR}}/users/<user>` on the host (the container mounts
+  `{{APP_DIR}}/users:/external:ro,rslave`, so new users need no restart; binds are re-created
+  after a reboot), creates an Immich account `<user>@nashubs.local` with storage label
+  `<user>` and an external library `/external/<user>` owned by it. Uploads live in the
+  app's own shared folder `Immich` (`{{APP_SHARE}}`), RW for administrators only.
+- **Jellyfin**: creates an account per DSM user and enables only the libraries whose folders
+  that DSM account can read (checked as the account, so DSM ACLs apply). Jellyfin
+  administrators are left alone.
+
+A member sets the password of *their own* accounts with `POST /apps/{app}/me/password`;
+the account comes from the device's DSM user, never from the request. `GET /apps/members`
+tells a device whether an app is linked and its login name. Accounts of DSM users that are
+removed are kept (their data stays); their Photos bind is removed.

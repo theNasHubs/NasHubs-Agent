@@ -87,6 +87,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /configure-cloudflare", s.requireAuth(s.requireRole(RoleAdmin, s.handleConfigureCloudflare)))
 	mux.HandleFunc("POST /apps/jellyfin/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleJellyfinSetup)))
 	mux.HandleFunc("POST /apps/immich/setup", s.requireAuth(s.requireRole(RoleAdmin, s.handleImmichSetup)))
+	mux.HandleFunc("POST /apps/{app}/link", s.requireAuth(s.requireRole(RoleAdmin, s.handleAppLink)))
+	mux.HandleFunc("GET /apps/members", s.requireAuth(s.requireRole(RoleMember, s.handleMemberApps)))
+	mux.HandleFunc("POST /apps/{app}/me/password", s.requireAuth(s.requireRole(RoleMember, s.handleMemberPassword)))
 	// Public access to the agent is an owner decision.
 	mux.HandleFunc("POST /remote/tailscale/relogin", s.requireAuth(s.requireRole(RoleAdmin, s.handleTailscaleRelogin)))
 	// Typed self-update replaces the removed generic /exec.
@@ -122,7 +125,7 @@ func (s *server) requireRole(min Role, next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handlePing(w http.ResponseWriter, _ *http.Request) {
-	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1", "roles-v2", "dsm-enroll-v1"}
+	caps := []string{"device-enrollment-v1", "resources-v1", "apps-dir-v1", "shares-v1", "remote-v2", "tailnet-v1", "app-setup-v1", "cloudflare-merge-v1", "upgrade-v1", "roles-v2", "dsm-enroll-v1", "members-v1"}
 	if s.nginxEnabled() {
 		// The agent and app web paths are published on DSM's own address.
 		caps = append(caps, "dsm-gateway-v1")

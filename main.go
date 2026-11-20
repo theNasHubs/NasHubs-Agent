@@ -106,6 +106,7 @@ func main() {
 
 	// Devices follow their DSM accounts (removed, disabled, admin group changes).
 	go s.runDSMRoleSync(10 * time.Minute)
+	go s.runMemberSync(10 * time.Minute)
 
 	addr := ":" + cfg.Port
 	// Public certificate identity is readable through authenticated DSM container logs.

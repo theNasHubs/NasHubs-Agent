@@ -98,6 +98,16 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Compose = strings.ReplaceAll(req.Compose, "{{APP_DIR}}", filepath.Join(s.cfg.AppsDir, req.ID))
 	}
+	// {{APP_SHARE}} is the app's own DSM shared folder (e.g. "Immich") for the data
+	// the app manages, read/write for administrators only.
+	if strings.Contains(req.Compose, "{{APP_SHARE}}") {
+		share, err := s.ensureAppShare(req.ID)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "APP_SHARE_FAILED", "detail": err.Error()})
+			return
+		}
+		req.Compose = strings.ReplaceAll(req.Compose, "{{APP_SHARE}}", share)
+	}
 	if unrenderedPlaceholder.MatchString(req.Compose) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "UNRENDERED_PLACEHOLDER"})
 		return

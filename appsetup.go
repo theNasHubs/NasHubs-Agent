@@ -225,11 +225,11 @@ func (s *server) setupJellyfin(req jellyfinSetupReq) (map[string]any, error) {
 			q.Add("paths", p)
 		}
 		if err := s.callJSON("POST", base+"/Library/VirtualFolders?"+q.Encode(), th, map[string]any{"LibraryOptions": map[string]any{}}, nil, "LIBRARY_FAILED"); err != nil {
-			return map[string]any{"ok": false, "error": "LIBRARY_FAILED", "createdLibraries": created, "wizardCompleted": true}, nil
+			return map[string]any{"ok": false, "error": "LIBRARY_FAILED", "createdLibraries": created, "wizardCompleted": true, "_token": auth.AccessToken}, nil
 		}
 		created = append(created, l.Name)
 	}
-	return map[string]any{"ok": true, "serverName": info.ServerName, "version": info.Version, "createdLibraries": created}, nil
+	return map[string]any{"ok": true, "serverName": info.ServerName, "version": info.Version, "createdLibraries": created, "_token": auth.AccessToken}, nil
 }
 
 func (s *server) handleJellyfinSetup(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +243,13 @@ func (s *server) handleJellyfinSetup(w http.ResponseWriter, r *http.Request) {
 		writeSetupError(w, err)
 		return
 	}
+	if token, _ := res["_token"].(string); token != "" {
+		if link, err := s.jellyfinLink(req.Port, token); err == nil {
+			s.saveLink("jellyfin", link, "", "")
+			res["members"] = true
+		}
+	}
+	delete(res, "_token")
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -309,12 +316,12 @@ func (s *server) setupImmich(req immichSetupReq) (map[string]any, error) {
 			ID string `json:"id"`
 		}
 		if err := s.callJSON("POST", base+"/libraries", th, map[string]any{"ownerId": login.UserID, "name": l.Name, "importPaths": l.Paths}, &lib, "LIBRARY_FAILED"); err != nil || lib.ID == "" {
-			return map[string]any{"ok": false, "error": "LIBRARY_FAILED", "createdLibraries": created, "adminCreated": true}, nil
+			return map[string]any{"ok": false, "error": "LIBRARY_FAILED", "createdLibraries": created, "adminCreated": true, "_token": login.AccessToken, "_userId": login.UserID}, nil
 		}
 		_ = s.callJSON("POST", base+"/libraries/"+url.PathEscape(lib.ID)+"/scan", th, map[string]any{}, nil, "SCAN_FAILED")
 		created = append(created, l.Name)
 	}
-	return map[string]any{"ok": true, "createdLibraries": created}, nil
+	return map[string]any{"ok": true, "createdLibraries": created, "_token": login.AccessToken, "_userId": login.UserID}, nil
 }
 
 func (s *server) handleImmichSetup(w http.ResponseWriter, r *http.Request) {
@@ -328,5 +335,14 @@ func (s *server) handleImmichSetup(w http.ResponseWriter, r *http.Request) {
 		writeSetupError(w, err)
 		return
 	}
+	if token, _ := res["_token"].(string); token != "" {
+		if link, err := s.immichLink(req.Port, token); err == nil {
+			userID, _ := res["_userId"].(string)
+			s.saveLink("immich", link, s.requesterDSMUser(r), userID)
+			res["members"] = true
+		}
+	}
+	delete(res, "_token")
+	delete(res, "_userId")
 	writeJSON(w, http.StatusOK, res)
 }

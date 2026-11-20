@@ -22,7 +22,8 @@ import (
 )
 
 // hostCommands are the only programs the agent runs on the NAS host.
-var hostCommands = map[string]bool{"id": true, "synouser": true, "synogroup": true, "synoshare": true}
+var hostCommands = map[string]bool{"id": true, "synouser": true, "synogroup": true, "synoshare": true,
+	"test": true, "mkdir": true, "chown": true, "mount": true, "umount": true, "mountpoint": true, "su": true}
 
 const dsmHostPath = "/usr/syno/sbin:/usr/syno/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 

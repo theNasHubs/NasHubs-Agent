@@ -74,7 +74,8 @@ type deployResponse struct {
 	Version  string `json:"version"`
 	HostPath string `json:"hostPath"`
 	Output   string `json:"output"`
-	WebPath  string `json:"webPath,omitempty"` // path for remote web access via reverse proxy
+	WebPath  string `json:"webPath,omitempty"`  // path for remote web access via reverse proxy
+	AppShare string `json:"appShare,omitempty"` // the app's own DSM shared folder, when it has one
 }
 
 // handleDeploy writes an immutable versioned compose artifact and runs
@@ -100,13 +101,19 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	// {{APP_SHARE}} is the app's own DSM shared folder (e.g. "Immich") for the data
 	// the app manages, read/write for administrators only.
-	if strings.Contains(req.Compose, "{{APP_SHARE}}") {
-		share, err := s.ensureAppShare(req.ID)
+	// {{MEDIA_SHARE}} is the same folder, readable by every DSM user (media to watch).
+	appShare := ""
+	for _, ph := range []string{"{{APP_SHARE}}", "{{MEDIA_SHARE}}"} {
+		if !strings.Contains(req.Compose, ph) {
+			continue
+		}
+		share, err := s.ensureAppShare(req.ID, ph == "{{MEDIA_SHARE}}")
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "APP_SHARE_FAILED", "detail": err.Error()})
 			return
 		}
-		req.Compose = strings.ReplaceAll(req.Compose, "{{APP_SHARE}}", share)
+		req.Compose = strings.ReplaceAll(req.Compose, ph, share)
+		appShare = share
 	}
 	if unrenderedPlaceholder.MatchString(req.Compose) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "UNRENDERED_PLACEHOLDER"})
@@ -229,6 +236,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	pruneVersions(filepath.Dir(dir), 5)
 
 	resp := deployResponse{
+		AppShare: appShare,
 		OK:       runErr == nil,
 		Version:  version,
 		HostPath: hostCompose,

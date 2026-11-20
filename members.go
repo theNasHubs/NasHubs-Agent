@@ -128,24 +128,30 @@ func appShareName(appID string) string {
 
 var appShareVolume = regexp.MustCompile(`^/volume[0-9]+`)
 
-// ensureAppShare creates the app's own DSM shared folder (read/write for
-// administrators only) on the volume of the apps directory, and returns its path.
-func (s *server) ensureAppShare(appID string) (string, error) {
+// ensureAppShare creates the app's own DSM shared folder on the volume of the
+// apps directory and returns its path. Administrators get read/write; with
+// membersRead every DSM user (group users) can read it too, e.g. Jellyfin's media.
+// DSM gives the strongest of a user's grants, so admins keep read/write.
+func (s *server) ensureAppShare(appID string, membersRead bool) (string, error) {
 	vol := appShareVolume.FindString(s.cfg.AppsDir)
 	name := appShareName(appID)
 	if vol == "" || !validAppID(appID) {
 		return "", fmt.Errorf("no volume for the app share")
 	}
 	path := vol + "/" + name
-	if _, err := s.host("synoshare", "--get", name); err == nil {
-		return path, nil
+	if _, err := s.host("synoshare", "--get", name); err != nil {
+		if out, err := s.host("synoshare", "--add", name, "NasHubs "+name, path, "", "", "", "1", "0"); err != nil {
+			return "", fmt.Errorf("create shared folder %s: %w: %s", name, err, firstLine(out))
+		}
+		// RW for administrators. Never an NA rule on @users: it would also deny admins.
+		if out, err := s.host("synoshare", "--setuser", name, "RW", "+", "@administrators"); err != nil {
+			return "", fmt.Errorf("share %s permissions: %w: %s", name, err, firstLine(out))
+		}
 	}
-	if out, err := s.host("synoshare", "--add", name, "NasHubs "+name, path, "", "", "", "1", "0"); err != nil {
-		return "", fmt.Errorf("create shared folder %s: %w: %s", name, err, firstLine(out))
-	}
-	// Only RW for administrators: an NA rule on @users would also deny admins.
-	if out, err := s.host("synoshare", "--setuser", name, "RW", "+", "@administrators"); err != nil {
-		return "", fmt.Errorf("share %s permissions: %w: %s", name, err, firstLine(out))
+	if membersRead {
+		if out, err := s.host("synoshare", "--setuser", name, "RO", "+", "@users"); err != nil {
+			return "", fmt.Errorf("share %s read access: %w: %s", name, err, firstLine(out))
+		}
 	}
 	return path, nil
 }

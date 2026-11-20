@@ -222,6 +222,10 @@ func (s *server) setupJellyfin(req jellyfinSetupReq) (map[string]any, error) {
 	for _, l := range req.Libraries {
 		q := url.Values{"name": {l.Name}, "collectionType": {l.Type}, "refreshLibrary": {"true"}}
 		for _, p := range l.Paths {
+			// Folders such as Jellyfin/Movies are created inside the app's shared folder.
+			if insideExistingShare(p) {
+				_, _ = s.host("mkdir", "-p", p)
+			}
 			q.Add("paths", p)
 		}
 		if err := s.callJSON("POST", base+"/Library/VirtualFolders?"+q.Encode(), th, map[string]any{"LibraryOptions": map[string]any{}}, nil, "LIBRARY_FAILED"); err != nil {

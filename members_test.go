@@ -218,3 +218,37 @@ func TestDSMCanReadRejectsQuotes(t *testing.T) {
 		t.Fatal(calls)
 	}
 }
+
+func TestEnsureAppShareMediaIsReadableByUsers(t *testing.T) {
+	var log []string
+	exists := false
+	s := &server{runCmd: func(args ...string) ([]byte, error) {
+		cmd := args[indexOf(args, "--")+3:]
+		log = append(log, strings.Join(cmd, " "))
+		if cmd[0] == "synoshare" && cmd[1] == "--get" && !exists {
+			return nil, errExit1
+		}
+		if cmd[0] == "synoshare" && cmd[1] == "--add" {
+			exists = true
+		}
+		return nil, nil
+	}}
+	s.cfg.AppsDir = "/volume1/docker"
+	path, err := s.ensureAppShare("jellyfin", true)
+	if err != nil || path != "/volume1/Jellyfin" {
+		t.Fatal(path, err)
+	}
+	got := strings.Join(log, "\n")
+	for _, want := range []string{"synoshare --setuser Jellyfin RW + @administrators", "synoshare --setuser Jellyfin RO + @users"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "NA") {
+		t.Fatal("deny rule would also block administrators")
+	}
+	log = nil
+	if _, err := s.ensureAppShare("immich", false); err != nil || strings.Contains(strings.Join(log, "\n"), "@users") {
+		t.Fatal("admin-only share opened to users", log)
+	}
+}

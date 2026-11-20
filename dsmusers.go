@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -112,18 +113,60 @@ var dsmClient = &http.Client{Timeout: 15 * time.Second, Transport: &http.Transpo
 
 // dsmSessionUser asks DSM which account a session belongs to. Several WebAPI
 // calls are tried because their availability differs between DSM versions.
-func dsmSessionUser(sid, synoToken string) (string, error) {
+// dsmAuthCGI is DSM's own session check for add-ons: given the browser's cookie,
+// SynoToken and address it prints the signed-in account name. DSM binds a session
+// to the address it was opened from, so the check must carry the phone's address,
+// not the agent's.
+const dsmAuthCGI = "/usr/syno/synoman/webman/modules/authenticate.cgi"
+
+var dsmSessionValue = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]{1,512}$`)
+
+// dsmCGIUser asks authenticate.cgi on the NAS host who owns the session.
+func (s *server) dsmCGIUser(sid, synoToken, ip string) (string, error) {
+	if !dsmSessionValue.MatchString(sid) || (synoToken != "" && !dsmSessionValue.MatchString(synoToken)) {
+		return "", fmt.Errorf("cgi: malformed session")
+	}
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("cgi: no client address")
+	}
+	args := []string{"run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "--",
+		"env", "-i", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "REQUEST_METHOD=GET", "SERVER_PROTOCOL=HTTP/1.1",
+		"REMOTE_ADDR=" + ip, "HTTP_COOKIE=id=" + sid, "QUERY_STRING=SynoToken=" + synoToken,
+		"HTTP_X_SYNO_TOKEN=" + synoToken, dsmAuthCGI}
+	out, err := s.docker(args...)
+	if err != nil {
+		return "", fmt.Errorf("cgi: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	name := strings.TrimSpace(lines[len(lines)-1])
+	if !dsmUserName.MatchString(name) {
+		return "", fmt.Errorf("cgi: session not accepted")
+	}
+	return name, nil
+}
+
+// dsmSessionUser names the DSM account that owns a session: first through DSM's
+// add-on check on the host, then through the WebAPI (which only accepts the
+// session when DSM skips its address check).
+func (s *server) dsmSessionUser(sid, synoToken, ip string) (string, error) {
 	if sid == "" || len(sid) > 512 || len(synoToken) > 256 {
 		return "", fmt.Errorf("DSM session required")
 	}
+	name, err := s.dsmCGIUser(sid, synoToken, ip)
+	if err == nil {
+		return name, nil
+	}
+	reasons := []string{err.Error()}
 	calls := []url.Values{
 		{"api": {"SYNO.Core.NormalUser"}, "version": {"1"}, "method": {"get"}},
 		{"api": {"SYNO.Core.Desktop.Initdata"}, "version": {"1"}, "method": {"get"}},
 	}
 	for _, q := range calls {
+		api := q.Get("api")
 		q.Set("_sid", sid)
 		req, err := http.NewRequest("GET", dsmBaseURL()+"/webapi/entry.cgi?"+q.Encode(), nil)
 		if err != nil {
+			reasons = append(reasons, api+": bad request")
 			continue
 		}
 		if synoToken != "" {
@@ -131,6 +174,7 @@ func dsmSessionUser(sid, synoToken string) (string, error) {
 		}
 		resp, err := dsmClient.Do(req)
 		if err != nil {
+			reasons = append(reasons, api+": unreachable")
 			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -138,15 +182,39 @@ func dsmSessionUser(sid, synoToken string) (string, error) {
 		var r struct {
 			Success bool           `json:"success"`
 			Data    map[string]any `json:"data"`
+			Error   struct {
+				Code int `json:"code"`
+			} `json:"error"`
 		}
-		if json.Unmarshal(body, &r) != nil || !r.Success {
+		if json.Unmarshal(body, &r) != nil {
+			reasons = append(reasons, fmt.Sprintf("%s: HTTP %d", api, resp.StatusCode))
+			continue
+		}
+		if !r.Success {
+			reasons = append(reasons, fmt.Sprintf("%s: code %d", api, r.Error.Code))
 			continue
 		}
 		if name := sessionUserName(r.Data); name != "" {
 			return name, nil
 		}
+		reasons = append(reasons, api+": no user name")
 	}
-	return "", fmt.Errorf("DSM session not accepted")
+	return "", fmt.Errorf("%s", strings.Join(reasons, "; "))
+}
+
+// dsmClientAddr is the address DSM saw the phone at. Behind DSM's nginx the agent
+// sees nginx; nginx passes the phone's address in X-Real-IP.
+func dsmClientAddr(r *http.Request) string {
+	ip := net.ParseIP(clientIP(r))
+	if ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
+			return real.String()
+		}
+	}
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // sessionUserName finds the account name in the WebAPI answers above.
@@ -200,9 +268,10 @@ func (s *server) handleEnrollDSM(w http.ResponseWriter, r *http.Request) {
 		s.writePairedDevice(w, d)
 		return
 	}
-	name, err := dsmSessionUser(req.SID, req.SynoToken)
+	name, err := s.dsmSessionUser(req.SID, req.SynoToken, dsmClientAddr(r))
 	if err != nil {
-		writeJSON(w, 403, map[string]any{"ok": false, "error": "DSM_SESSION_REJECTED"})
+		log.Printf("DSM pairing refused: %v", err)
+		writeJSON(w, 403, map[string]any{"ok": false, "error": "DSM_SESSION_REJECTED", "detail": err.Error()})
 		return
 	}
 	acct, err := s.lookupDSMUser(name)

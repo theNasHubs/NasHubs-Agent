@@ -22,6 +22,12 @@ func fakeHost(accounts map[string]string, calls *[][]string) func(...string) ([]
 				return []byte(strings.Split(line, "|")[0] + "\n"), nil
 			}
 			return []byte("id: '" + cmd[1] + "': no such user\n"), errExit1
+		case len(cmd) > 0 && cmd[0] == "env":
+			// authenticate.cgi: "sid-cgi" is a session opened from 203.0.113.7.
+			if cmd[len(cmd)-1] == dsmAuthCGI && indexOf(cmd, "HTTP_COOKIE=id=sid-cgi") > 0 && indexOf(cmd, "REMOTE_ADDR=203.0.113.7") > 0 {
+				return []byte("thanhvien\n"), nil
+			}
+			return []byte("\n"), nil
 		case len(cmd) == 3 && cmd[0] == "synouser" && cmd[1] == "--get":
 			return []byte("User uid    : [1027]\nExpired     : [" + strings.Split(accounts[cmd[2]], "|")[1] + "]\n"), nil
 		}
@@ -162,5 +168,38 @@ func TestSessionUserName(t *testing.T) {
 	if idInGroup("uid=1(a) gid=100(users) groups=100(users),101(administrators)", "administrators") != true ||
 		idInGroup("uid=1(a) gid=100(users) groups=100(users)", "administrators") != false {
 		t.Fatal("idInGroup")
+	}
+}
+
+func TestDSMSessionUserUsesHostCheckWithPhoneAddress(t *testing.T) {
+	fakeDSM(t, map[string]string{"sid-http": "duconmang"})
+	var calls [][]string
+	s := &server{runCmd: fakeHost(testAccounts, &calls)}
+	if name, err := s.dsmSessionUser("sid-cgi", "tok", "203.0.113.7"); err != nil || name != "thanhvien" {
+		t.Fatalf("%q %v", name, err)
+	}
+	// DSM binds the session to its address: another address is refused by the host check.
+	if _, err := s.dsmSessionUser("sid-cgi", "tok", "198.51.100.1"); err == nil || !strings.Contains(err.Error(), "code 119") {
+		t.Fatalf("%v", err)
+	}
+	// Falls back to the WebAPI when DSM skips the address check.
+	if name, err := s.dsmSessionUser("sid-http", "", "198.51.100.1"); err != nil || name != "duconmang" {
+		t.Fatalf("%q %v", name, err)
+	}
+	if _, err := s.dsmSessionUser("a b;rm", "", "203.0.113.7"); err == nil {
+		t.Fatal("malformed session accepted")
+	}
+}
+
+func TestDSMClientAddrTrustsNginxOnlyFromLocal(t *testing.T) {
+	r := httptest.NewRequest("POST", "/devices/enroll-dsm", nil)
+	r.RemoteAddr = "172.17.0.1:40000"
+	r.Header.Set("X-Real-IP", "203.0.113.7")
+	if got := dsmClientAddr(r); got != "203.0.113.7" {
+		t.Fatal(got)
+	}
+	r.RemoteAddr = "198.51.100.9:40000"
+	if got := dsmClientAddr(r); got != "198.51.100.9" {
+		t.Fatal(got)
 	}
 }

@@ -291,6 +291,9 @@ location ^~ /nashubs-agent/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_buffering off;
     proxy_request_buffering off;
+    # A deploy pulls images before it answers; DSM's 60 s default cut it with 504.
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
 }`
 	s.installConf(confFile, conf)
 	s.ensureLegacySelfProxy()
@@ -314,6 +317,9 @@ location ^~ /nasdeck-agent/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_buffering off;
     proxy_request_buffering off;
+    # A deploy pulls images before it answers; DSM's 60 s default cut it with 504.
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
 }`
 
 // ensureLegacySelfProxy installs dsm.nasdeck-agent.conf only when it does not

@@ -52,6 +52,23 @@ func memberHost(t *testing.T) (func(...string) ([]byte, error), func() []string)
 			case "umount":
 				delete(mounted, cmd[1])
 				return nil, nil
+			case "synoshare":
+				if cmd[1] == "--get" && cmd[2] == "video" {
+					return []byte("SYNOSHARE video:\n\tRW list .......[@administrators]\n\tRO list .......[duconmang]\n\tNA list .......[]\n"), nil
+				}
+				if cmd[1] == "--get" && cmd[2] == "Media" {
+					return []byte("\tRW list .......[@administrators]\n\tRO list .......[@users]\n\tNA list .......[]\n"), nil
+				}
+				if cmd[1] == "--get" && cmd[2] == "Jellyfin" {
+					return []byte("\tRW list .......[@administrators]\n\tRO list .......[@users]\n\tDeny list ..[thanhvien]\n"), nil
+				}
+			case "id":
+				if len(cmd) == 3 && cmd[1] == "-Gn" {
+					if cmd[2] == "duconmang" {
+						return []byte("users administrators\n"), nil
+					}
+					return []byte("users\n"), nil
+				}
 			case "su":
 				if cmd[3] == "duconmang" && strings.Contains(cmd[5], "/volume1/video") {
 					return nil, nil
@@ -115,7 +132,7 @@ func (f *fakeApps) handler(t *testing.T) http.HandlerFunc {
 			f.jfUsers[id] = body["Name"].(string)
 			w.Write([]byte(`{"Id":"` + id + `"}`))
 		case p == "GET /Library/VirtualFolders":
-			w.Write([]byte(`[{"ItemId":"lib-movies","Locations":["/volume1/video/Movies"]},{"ItemId":"lib-music","Locations":["/volume1/music"]}]`))
+			w.Write([]byte(`[{"ItemId":"lib-movies","Locations":["/volume1/video/Movies"]},{"ItemId":"lib-music","Locations":["/volume1/music"]},{"ItemId":"lib-jf","Locations":["/volume1/Jellyfin/Movies"]},{"ItemId":"lib-media","Locations":["/volume1/Media/Shows"]}]`))
 		case p == "GET /Users/jf-admin":
 			w.Write([]byte(`{"Policy":{"IsAdministrator":true,"EnableAllFolders":true}}`))
 		case strings.HasPrefix(p, "GET /Users/"):
@@ -175,7 +192,8 @@ func TestMemberSyncCreatesAccountsPhotosAndLibraries(t *testing.T) {
 	if apps.libs["im-thanhvien"] != "/external/thanhvien" || apps.libs["im-duconmang"] != "/external/duconmang" || len(apps.immich) != 2 {
 		t.Fatal(apps.libs, apps.immich)
 	}
-	if strings.Join(apps.policies["jf-duconmang"], ",") != "lib-movies" || len(apps.policies["jf-thanhvien"]) != 0 || apps.policies["jf-admin"] != nil {
+	// duconmang: video (named), Jellyfin and Media (via @users). thanhvien: only Media (Jellyfin denies them by name).
+	if strings.Join(apps.policies["jf-duconmang"], ",") != "lib-jf,lib-media,lib-movies" || strings.Join(apps.policies["jf-thanhvien"], ",") != "lib-media" || apps.policies["jf-admin"] != nil {
 		t.Fatal(apps.policies)
 	}
 	if _, ok := apps.policies["jf-thanhvien"]; !ok {

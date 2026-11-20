@@ -186,14 +186,71 @@ func (s *server) bindPhotos(appID string, photos map[string]string, previous []s
 
 var readablePath = regexp.MustCompile(`^/volume[0-9]+/[^'"\x60$\\\n]+$`)
 
-// dsmCanRead reports whether a DSM account may read and enter a folder (DSM ACLs
-// are enforced by the kernel, so the check runs as that account).
+// dsmCanRead reports whether a DSM account may read a folder in a shared folder,
+// by DSM's own share permissions (what File Station and SMB enforce): a deny (NA)
+// for the user or one of their groups wins, then read/write or read-only allows.
+// When the share's permissions cannot be read it falls back to trying as the account.
 func (s *server) dsmCanRead(name, path string) bool {
 	if !dsmUserName.MatchString(name) || !readablePath.MatchString(path) || strings.Contains(path, "..") {
 		return false
 	}
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) >= 2 && parts[1] != "" {
+		if lists, ok := s.sharePermissions(parts[1]); ok {
+			who := map[string]bool{strings.ToLower(name): true}
+			if out, err := s.host("id", "-Gn", name); err == nil {
+				for _, g := range strings.Fields(string(out)) {
+					who["@"+strings.ToLower(g)] = true
+				}
+			}
+			has := func(list []string) bool {
+				for _, x := range list {
+					if who[strings.ToLower(x)] {
+						return true
+					}
+				}
+				return false
+			}
+			if has(lists["NA"]) {
+				return false
+			}
+			return has(lists["RW"]) || has(lists["RO"])
+		}
+	}
 	_, err := s.host("su", "-s", "/bin/sh", name, "-c", "test -r '"+path+"' && test -x '"+path+"'")
 	return err == nil
+}
+
+var shareListLine = regexp.MustCompile(`(?i)^\s*(RW|RO|NA|Deny) list[ .:]*\[(.*)\]\s*$`)
+
+// sharePermissions reads the RW/RO/NA lists of a DSM shared folder (synoshare --get).
+func (s *server) sharePermissions(share string) (map[string][]string, bool) {
+	if !dsmUserName.MatchString(share) {
+		return nil, false
+	}
+	out, err := s.host("synoshare", "--get", share)
+	if err != nil {
+		return nil, false
+	}
+	lists := map[string][]string{}
+	found := false
+	for _, line := range strings.Split(string(out), "\n") {
+		m := shareListLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		found = true
+		kind := strings.ToUpper(m[1])
+		if kind == "DENY" {
+			kind = "NA" // DSM prints the no-access list as "Deny list"
+		}
+		for _, x := range strings.Split(m[2], ",") {
+			if x = strings.TrimSpace(x); x != "" {
+				lists[kind] = append(lists[kind], x)
+			}
+		}
+	}
+	return lists, found
 }
 
 // ---- sync ----

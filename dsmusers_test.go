@@ -16,6 +16,9 @@ func fakeHost(accounts map[string]string, calls *[][]string) func(...string) ([]
 			i++
 		}
 		cmd := args[i+1:]
+		if len(cmd) > 1 && cmd[0] == "env" && strings.HasPrefix(cmd[1], "PATH=") {
+			cmd = cmd[2:]
+		}
 		switch {
 		case len(cmd) == 2 && cmd[0] == "id":
 			if line, ok := accounts[cmd[1]]; ok {
@@ -65,7 +68,7 @@ func TestLookupDSMUser(t *testing.T) {
 		t.Fatal("option-like name accepted")
 	}
 	for _, c := range calls {
-		if c[0] != "run" || c[len(c)-2] == "" || !hostCommands[c[indexOf(c, "--")+1]] {
+		if c[0] != "run" || c[len(c)-2] == "" || !hostCommands[c[indexOf(c, "--")+3]] || !strings.Contains(c[indexOf(c, "--")+2], "/usr/syno/sbin") {
 			t.Fatal(c)
 		}
 	}

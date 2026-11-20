@@ -24,12 +24,16 @@ import (
 // hostCommands are the only programs the agent runs on the NAS host.
 var hostCommands = map[string]bool{"id": true, "synouser": true, "synogroup": true, "synoshare": true}
 
+const dsmHostPath = "/usr/syno/sbin:/usr/syno/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 // host runs an allow-listed command on the NAS host through the pinned helper image.
 func (s *server) host(args ...string) ([]byte, error) {
 	if len(args) == 0 || !hostCommands[args[0]] {
 		return nil, fmt.Errorf("host command not allowed")
 	}
-	full := append([]string{"run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "--"}, args...)
+	// DSM keeps its tools in /usr/syno/sbin, which is not on the helper image's PATH.
+	full := append([]string{"run", "--rm", "--pid=host", "--privileged", helperImage, "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "--",
+		"env", "PATH=" + dsmHostPath}, args...)
 	return s.docker(full...)
 }
 
@@ -62,13 +66,13 @@ func (s *server) lookupDSMUser(name string) (dsmAccount, error) {
 		if strings.Contains(strings.ToLower(string(out)), "no such user") {
 			return a, nil
 		}
-		return a, fmt.Errorf("read DSM user: %w", err)
+		return a, fmt.Errorf("read DSM user: %w: %s", err, firstLine(out))
 	}
 	a.Exists = true
 	a.Admin = idInGroup(string(out), "administrators")
 	out, err = s.host("synouser", "--get", name)
 	if err != nil {
-		return a, fmt.Errorf("read DSM user: %w", err)
+		return a, fmt.Errorf("read DSM user: %w: %s", err, firstLine(out))
 	}
 	a.Disabled = synouserExpired(string(out))
 	return a, nil
@@ -276,7 +280,8 @@ func (s *server) handleEnrollDSM(w http.ResponseWriter, r *http.Request) {
 	}
 	acct, err := s.lookupDSMUser(name)
 	if err != nil {
-		writeJSON(w, 502, map[string]any{"ok": false, "error": "DSM_USER_UNREADABLE"})
+		log.Printf("DSM pairing: cannot read account %s: %v", name, err)
+		writeJSON(w, 502, map[string]any{"ok": false, "error": "DSM_USER_UNREADABLE", "detail": err.Error()})
 		return
 	}
 	if !acct.Exists || acct.Disabled {
@@ -330,4 +335,13 @@ func (s *server) runDSMRoleSync(every time.Duration) {
 		time.Sleep(every)
 		s.syncDSMRoles()
 	}
+}
+
+// firstLine keeps error details short.
+func firstLine(out []byte) string {
+	line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0])
+	if len(line) > 160 {
+		line = line[:160]
+	}
+	return line
 }
